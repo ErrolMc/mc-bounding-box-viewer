@@ -1,0 +1,61 @@
+{
+	// Everything goes through Gradle (Fabric Loom), which builds the mod the same way as the release jar.
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build mod",
+			"detail": "gradlew build: compiles, runs the tests and writes build/libs/bounding-box-viewer-<version>.jar",
+			"type": "shell",
+			"command": "./gradlew",
+			"windows": { "command": ".\\gradlew.bat" },
+			"args": ["build", "--console=plain"],
+			"group": { "kind": "build", "isDefault": true },
+			"problemMatcher": ["$gradle"]
+		},
+		{
+			"label": "Run Minecraft client",
+			"detail": "gradlew runClient: starts a dev client with the mod",
+			"type": "shell",
+			"command": "./gradlew",
+			"windows": { "command": ".\\gradlew.bat" },
+			"args": ["runClient", "--console=plain"],
+			"problemMatcher": []
+		},
+		{
+			"label": "Start client for debugging",
+			"detail": "gradlew runClient --debug-jvm: waits on port 5005 until the debugger attaches (used by F5)",
+			"type": "shell",
+			"command": "./gradlew",
+			"windows": { "command": ".\\gradlew.bat" },
+			"args": ["runClient", "--debug-jvm", "--console=plain"],
+			"isBackground": true,
+			"problemMatcher": {
+				"owner": "minecraft",
+				"pattern": { "regexp": "^__never_matches__$" },
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "^.*Task.*$",
+					"endsPattern": "Listening for transport dt_socket at address"
+				}
+			}
+		},
+		{
+			"label": "Run tests",
+			"type": "shell",
+			"command": "./gradlew",
+			"windows": { "command": ".\\gradlew.bat" },
+			"args": ["test", "--console=plain"],
+			"group": "test",
+			"problemMatcher": ["$gradle"]
+		},
+		{
+			"label": "Decompile Minecraft sources",
+			"detail": "gradlew genSources: lets Go to Definition show real Minecraft code. Run again after changing minecraft_version, then 'Java: Clean Java Language Server Workspace'",
+			"type": "shell",
+			"command": "./gradlew",
+			"windows": { "command": ".\\gradlew.bat" },
+			"args": ["genSources", "--console=plain"],
+			"problemMatcher": []
+		}
+	]
+}

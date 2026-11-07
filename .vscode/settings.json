@@ -1,0 +1,33 @@
+{
+	// Minecraft 26.x needs Java 25. The machine default (JAVA_HOME) is JDK 17, so point the Java extension at JDK 25.
+	"java.configuration.runtimes": [
+		{
+			"name": "JavaSE-25",
+			"path": "C:\\Program Files\\Java\\jdk-25.0.5.0.2",
+			"default": true
+		}
+	],
+	"java.import.gradle.java.home": "C:\\Program Files\\Java\\jdk-25.0.5.0.2",
+	"java.import.gradle.wrapper.enabled": true,
+	"java.configuration.updateBuildConfiguration": "automatic",
+	"java.import.gradle.offline.enabled": false,
+	"java.compile.nullAnalysis.mode": "automatic",
+
+	"[java]": {
+		"editor.insertSpaces": false,
+		"editor.tabSize": 4
+	},
+	"[json]": {
+		"editor.insertSpaces": false,
+		"editor.tabSize": 4
+	},
+
+	"files.exclude": {
+		"**/bin": true,
+		"**/.gradle": true
+	},
+	"search.exclude": {
+		"**/build": true,
+		"**/run": true
+	}
+}
