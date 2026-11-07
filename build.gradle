@@ -42,6 +42,59 @@ fabricApi {
 	}
 }
 
+// Seed survey: the seed planning test (and nothing else) on many random seeds, several game clients at once, each in
+// its own run folder. Every settled piece goes to seed-survey/ and is summed up there (summary.txt; all-pieces.csv for
+// sums of your own). See the README.
+//   gradlew seedSurvey -Pseeds=100 -Pinstances=4 [-PworldType=normal|large_biomes|amplified] [-PperStructure=20] [-PseedList=1,2,3]
+def survey = [
+	instances: providers.gradleProperty('instances').getOrElse('4') as int,
+	seeds: providers.gradleProperty('seeds').getOrElse('100'),
+	seedList: providers.gradleProperty('seedList').getOrElse(''),
+	worldType: providers.gradleProperty('worldType').getOrElse('normal'),
+	perStructure: providers.gradleProperty('perStructure').getOrElse('20'),
+	dir: file('seed-survey').absolutePath,
+]
+def surveyRuns = (0..<survey.instances).collect { i ->
+	loom.runs.create("seedSurvey$i") {
+		inherit loom.runs.clientGameTest
+		runDir "build/run/seedSurvey/$i"
+		ideConfigGenerated false
+		vmArg '-Xmx6G'
+		property 'bbv.survey', 'true'
+		property 'bbv.survey.instance', "$i"
+		property 'bbv.survey.instances', "${survey.instances}"
+		property 'bbv.survey.seeds', survey.seeds
+		property 'bbv.survey.seedList', survey.seedList
+		property 'bbv.survey.type', survey.worldType
+		property 'bbv.survey.perStructure', survey.perStructure
+		property 'bbv.survey.dir', survey.dir
+	}
+	"runSeedSurvey$i"
+}
+def cleanSurveyRuns = tasks.register('cleanSeedSurveyRuns', Delete) {
+	delete 'build/run/seedSurvey'
+}
+def surveySummary = tasks.register('seedSurveySummary', JavaExec) {
+	group = 'fabric'
+	description = 'Sums up the seed survey data in seed-survey/ (summary.txt), filing a survey just finished under the time.'
+	classpath = sourceSets.gametest.output
+	mainClass = 'com.errolmc.boundingboxviewer.gametest.SeedSurveySummary'
+	args survey.dir
+	javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+	mustRunAfter surveyRuns
+}
+surveyRuns.each { name ->
+	tasks.named(name) {
+		dependsOn cleanSurveyRuns
+		finalizedBy surveySummary
+	}
+}
+tasks.register('seedSurvey') {
+	group = 'fabric'
+	description = 'Runs the seed survey: -Pseeds, -Pinstances, -PworldType, -PperStructure, -PseedList (see build.gradle).'
+	dependsOn surveyRuns
+}
+
 dependencies {
 	// To change the versions see the gradle.properties file
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"

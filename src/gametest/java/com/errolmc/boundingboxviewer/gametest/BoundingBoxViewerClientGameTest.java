@@ -88,6 +88,13 @@ public class BoundingBoxViewerClientGameTest implements FabricClientGameTest {
 
 	@Override
 	public void runTest(ClientGameTestContext context) {
+		if (SeedSurvey.ACTIVE) {
+			return;
+		}
+		ChunkSaving.skipDuring(() -> run(context));
+	}
+
+	private void run(ClientGameTestContext context) {
 		context.runOnClient(MuteAudio::mute);
 		TestWorlds.resetConfig(context);
 		seedWorld = SeedWorld.create(SEED, WorldType.NORMAL);

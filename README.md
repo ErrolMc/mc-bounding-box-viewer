@@ -71,6 +71,14 @@ Gradle tasks, from VS Code's task menu or a terminal:
 .\gradlew.bat genSources          # decompiled Minecraft sources for the editor
 ```
 
+For more data on seed mode, the seed survey runs only the seed-against-server test, on random seeds, in several game clients at once:
+
+```
+.\gradlew.bat seedSurvey -Pseeds=100 -Pinstances=4
+```
+
+Options: `-Pinstances` game clients at once (each takes up to 6 GB, and they share the CPU), `-Pseeds` random seeds over them all, `-PworldType=normal|large_biomes|amplified`, `-PperStructure=20` settling structures compared per kind and world, `-PseedList=1,2,3` these seeds instead (to look at one again). It doesn't stop at what it finds wrong; it writes it down. Everything goes to `seed-survey\`: each survey in a folder named for when it finished, with its own `summary.txt`, and at the top `summary.txt` over every survey kept and `all-pieces.csv` (every settled piece: seed, structure, where, the planned, seed mode's and server's heights, biome) for sums of your own. `.\gradlew.bat seedSurveySummary` writes the summaries again. Delete old surveys after changing how seed mode works out heights.
+
 The icon is drawn by `python -I tools/make-icon.py`.
 
 ## Licence

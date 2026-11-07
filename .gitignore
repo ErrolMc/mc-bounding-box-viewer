@@ -50,3 +50,7 @@ __pycache__/
 # minecraft classes in unit tests
 
 logs/
+
+# seed survey data (gradlew seedSurvey)
+
+seed-survey/

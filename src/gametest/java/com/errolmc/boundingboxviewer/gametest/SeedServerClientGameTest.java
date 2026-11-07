@@ -73,6 +73,9 @@ public class SeedServerClientGameTest implements FabricClientGameTest {
 
 	@Override
 	public void runTest(ClientGameTestContext context) {
+		if (SeedSurvey.ACTIVE) {
+			return;
+		}
 		context.runOnClient(MuteAudio::mute);
 		TestWorlds.resetConfig(context);
 		try (TestDedicatedServerContext server = TestWorlds.builder(context, SEED, WorldType.NORMAL).createServer()) {
