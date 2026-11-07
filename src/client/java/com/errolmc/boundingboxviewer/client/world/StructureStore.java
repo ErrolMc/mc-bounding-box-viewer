@@ -8,8 +8,9 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
 /**
- * Every structure the singleplayer server has loaded since the world opened, by dimension. Written on the server
- * thread by {@link StructureCollector}, read on the client thread by the overlay; cleared when the server stops.
+ * Every structure known since the world opened, by dimension: in singleplayer those the server has loaded, written on
+ * the server thread by {@link StructureCollector}; on other servers those worked out from the world's seed, written by
+ * seed mode's worker threads. Read on the client thread by the overlay; cleared when the world closes.
  */
 public final class StructureStore {
 	/** A structure is named by its id and the chunk it starts in. */
@@ -21,13 +22,13 @@ public final class StructureStore {
 	private StructureStore() {
 	}
 
-	static boolean contains(ResourceKey<Level> level, String id, long chunk) {
+	public static boolean contains(ResourceKey<Level> level, String id, long chunk) {
 		Map<StartKey, StructureInfo> structures = LEVELS.get(level);
 		return structures != null && structures.containsKey(new StartKey(id, chunk));
 	}
 
 	/** Adds the structure, or replaces what was read of it before. */
-	static void put(ResourceKey<Level> level, StructureInfo info) {
+	public static void put(ResourceKey<Level> level, StructureInfo info) {
 		LEVELS.computeIfAbsent(level, key -> new ConcurrentHashMap<>()).put(new StartKey(info.id(), info.startChunk()), info);
 	}
 
@@ -37,14 +38,13 @@ public final class StructureStore {
 		return structures != null ? structures.values() : List.of();
 	}
 
-	/** The structure with this id starting in this chunk, or null when the server hasn't loaded it. */
+	/** The structure with this id starting in this chunk, or null when it isn't known. */
 	public static StructureInfo get(ResourceKey<Level> level, String id, long chunk) {
 		Map<StartKey, StructureInfo> structures = LEVELS.get(level);
 		return structures != null ? structures.get(new StartKey(id, chunk)) : null;
 	}
 
-	static void clear() {
+	public static void clear() {
 		LEVELS.clear();
 	}
 }
-

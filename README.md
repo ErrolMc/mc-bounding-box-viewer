@@ -1,6 +1,6 @@
 # Bounding Box Viewer
 
-A client-side Fabric mod for Minecraft 26.3 that draws the bounding boxes of structures in a singleplayer world: swamp huts, pillager outposts, ocean monuments, nether fortresses, end cities, villages, strongholds, mineshafts, temples, mansions, bastions, ancient cities, trial chambers and the rest, plus structures from mods and datapacks. Press **B** to turn them on and off.
+A client-side Fabric mod for Minecraft 26.3 that draws the bounding boxes of structures: swamp huts, pillager outposts, ocean monuments, nether fortresses, end cities, villages, strongholds, mineshafts, temples, mansions, bastions, ancient cities, trial chambers and the rest, plus structures from mods and datapacks. Press **B** to turn them on and off. Works in singleplayer, and on servers and Realms from the world's seed (see below).
 
 ## What it shows
 
@@ -10,9 +10,24 @@ A client-side Fabric mod for Minecraft 26.3 that draws the bounding boxes of str
 
 Structures show once the game has loaded them, so as you move around more appear. A structure that starts in a chunk that isn't loaded yet but reaches into one that is (a stronghold's corridor, a village's road) shows as well.
 
+## On a server or Realm
+
+A server never tells the game where its structures are, so on one (a multiplayer server, a Realm, a LAN world someone else hosts) the mod works them out from the world's seed, the same way the server did when it generated them. It needs the seed once per server:
+
+- **If you're an operator**, run `/seed`: the mod picks the seed up from the reply.
+- **Otherwise** ask whoever runs the server for it and run `/boxes seed <seed>`. For a world that isn't the default type add the type: `/boxes seed 123456 large_biomes` or `amplified`. A seed in words works as the create-world screen takes it.
+
+The seed is saved for that server (a Realm by its name, any other server by its address), so next time B just works. `/boxes seed` shows the seed in use; `/boxes seed clear` forgets it.
+
+How close it is, from the seed alone:
+
+- **Where each structure is, what it is, and its pieces are exact**: the same calculation the server makes. The in-game tests check this against a real server over seven worlds, all three dimensions and tens of thousands of chunks.
+- **A few kinds settle onto the ground when their chunk generates**: swamp huts, desert and jungle temples, igloos, shipwrecks, ocean ruins and buried treasure. Seed mode puts them on the ground the seed makes, before caves, trees, lakes and other structures change it. In the tests (about 900 pieces over seven worlds) swamp huts, jungle temples and igloos landed exactly where the server put them every time; desert temples, shipwrecks and ocean ruins 80 to 95% of the time, the rest mostly a few blocks off and now and then up to 20 where a cave or another ruin was in the way; buried treasure within 2 blocks, and it moves onto its chest once its chunk has loaded.
+- **Vanilla world generation only**: on a server whose datapacks or mods change world generation, or a superflat or custom world, the boxes won't match. In a world upgraded from an older version, old chunks keep the old structures; seed mode shows what 26.3 would generate.
+
 ## Keys
 
-- **B**: boxes on and off. Says how many structures are within range.
+- **B**: boxes on and off. Says how many structures are within range. On a server with no seed saved, says how to give it one.
 - **Boxes through blocks** (unbound at first): draws them on top of everything, to see strongholds, mineshafts and fortresses inside the ground.
 
 Both are under Options → Controls → Key Binds → Bounding Box Viewer.
@@ -29,7 +44,7 @@ Settings are saved in `config/bounding-box-viewer.json`.
 
 ## Limits
 
-- **Singleplayer only** (and the host of a LAN world): the mod reads the structures from the game's built-in server. A multiplayer server doesn't send structures to the game, so there it says so and draws nothing.
+- **On servers it needs the seed** (above). A Realm's seed is saved by the Realm's name, so after switching the Realm to another world slot, give the new world's seed with `/boxes seed`.
 - **Boxes are where the structure was planned**, not checked block by block: a piece that the terrain or another structure cut into still shows whole.
 
 ## Install
@@ -52,7 +67,7 @@ Gradle tasks, from VS Code's task menu or a terminal:
 ```
 .\gradlew.bat build               # compile, unit tests, jar in build\libs
 .\gradlew.bat runClient           # dev client without the debugger
-.\gradlew.bat runClientGameTest   # in-game test (muted): a world with a known seed, visits one of every structure in the game and checks its box against the server's
+.\gradlew.bat runClientGameTest   # in-game tests (muted): visits one of every structure in the game and checks its box against the server's; seed mode against the server in seven worlds; seed mode end to end on a dedicated server
 .\gradlew.bat genSources          # decompiled Minecraft sources for the editor
 ```
 

@@ -9,7 +9,9 @@
 			"com.errolmc.boundingboxviewer.gametest.MuteAudio"
 		],
 		"fabric-client-gametest": [
-			"com.errolmc.boundingboxviewer.gametest.BoundingBoxViewerClientGameTest"
+			"com.errolmc.boundingboxviewer.gametest.BoundingBoxViewerClientGameTest",
+			"com.errolmc.boundingboxviewer.gametest.SeedPlanningClientGameTest",
+			"com.errolmc.boundingboxviewer.gametest.SeedServerClientGameTest"
 		]
 	},
 	"depends": {

@@ -164,4 +164,3 @@ public final class BoxOverlay {
 		builtFor = null;
 	}
 }
-

@@ -1,6 +1,7 @@
 package com.errolmc.boundingboxviewer.client.config;
 
 import com.errolmc.boundingboxviewer.structure.StructureKind;
+import com.errolmc.boundingboxviewer.structure.WorldType;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
@@ -9,7 +10,9 @@ import java.io.Reader;
 import java.io.Writer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.util.Mth;
@@ -41,6 +44,29 @@ public final class BoxConfig {
 
 	/** {@link StructureKind#key()} of every kind switched off. */
 	public Set<String> hidden = new TreeSet<>();
+
+	/** The seed of each server structures are worked out for, by {@code ServerKey}: Realms by name, others by address. */
+	public Map<String, SavedSeed> seeds = new TreeMap<>();
+
+	/** A server's world seed and type, for seed mode. */
+	public static final class SavedSeed {
+		public long seed;
+		/** {@link WorldType#key()}. */
+		public String worldType = WorldType.NORMAL.key();
+
+		public SavedSeed() {
+		}
+
+		public SavedSeed(long seed, WorldType type) {
+			this.seed = seed;
+			this.worldType = type.key();
+		}
+
+		public WorldType type() {
+			WorldType type = WorldType.byKey(worldType);
+			return type != null ? type : WorldType.NORMAL;
+		}
+	}
 
 	public static BoxConfig get() {
 		return instance;
@@ -89,7 +115,9 @@ public final class BoxConfig {
 		// Gson fills a Set field with whatever set it likes, or null when the file has none.
 		hidden = hidden == null ? new TreeSet<>() : new TreeSet<>(hidden);
 		hidden.removeIf(key -> key == null || StructureKind.byKey(key) == null);
+		seeds = seeds == null ? new TreeMap<>() : new TreeMap<>(seeds);
+		seeds.values().removeIf(saved -> saved == null);
+		seeds.values().forEach(saved -> saved.worldType = saved.type().key());
 		return this;
 	}
 }
-

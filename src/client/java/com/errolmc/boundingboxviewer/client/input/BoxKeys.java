@@ -2,6 +2,7 @@ package com.errolmc.boundingboxviewer.client.input;
 
 import com.errolmc.boundingboxviewer.client.config.BoxConfig;
 import com.errolmc.boundingboxviewer.client.overlay.BoxOverlay;
+import com.errolmc.boundingboxviewer.client.seed.SeedMode;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
@@ -48,14 +49,23 @@ public final class BoxKeys {
 			say(minecraft, Component.translatable("bounding-box-viewer.message.off"));
 			return;
 		}
-		// The client only knows structures through the singleplayer server; a multiplayer server never sends them.
-		if (!minecraft.hasSingleplayerServer()) {
-			say(minecraft, Component.translatable("bounding-box-viewer.message.singleplayer_only"));
+		// A server never sends structures to the game: on one that isn't this game's own, they come from its seed.
+		boolean fromSeed = !minecraft.hasSingleplayerServer();
+		if (fromSeed && !SeedMode.hasSeed()) {
+			say(minecraft, Component.translatable("bounding-box-viewer.message.no_seed"));
 			return;
 		}
 		BoxOverlay.setEnabled(true);
 		BoxOverlay.rebuild(minecraft);
 		int count = BoxOverlay.shown().size();
+		if (fromSeed && SeedMode.status() == SeedMode.Status.FAILED) {
+			say(minecraft, Component.translatable("bounding-box-viewer.message.seed_failed"));
+			return;
+		}
+		if (fromSeed && count == 0 && !SeedMode.idle()) {
+			say(minecraft, Component.translatable("bounding-box-viewer.message.seed_working"));
+			return;
+		}
 		say(minecraft, count == 0
 			? Component.translatable("bounding-box-viewer.message.on_none", BoxConfig.get().range)
 			: Component.translatable(count == 1 ? "bounding-box-viewer.message.on_one" : "bounding-box-viewer.message.on", count, BoxConfig.get().range));
@@ -72,4 +82,3 @@ public final class BoxKeys {
 		return TOGGLE.getTranslatedKeyMessage();
 	}
 }
-

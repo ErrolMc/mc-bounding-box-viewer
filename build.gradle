@@ -37,6 +37,8 @@ fabricApi {
 		modId = 'bounding-box-viewer-gametest'
 		enableGameTests = false
 		enableClientGameTests = true
+		// The seed mode test runs a dedicated server, which needs the Minecraft EULA (https://aka.ms/MinecraftEULA) accepted: the user has.
+		eula = true
 	}
 }
 

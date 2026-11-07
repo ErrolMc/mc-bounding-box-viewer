@@ -3,7 +3,7 @@
 	"id": "bounding-box-viewer",
 	"version": "${version}",
 	"name": "Bounding Box Viewer",
-	"description": "Press B to see the bounding boxes of structures in a singleplayer world: witch huts, pillager outposts, ocean monuments, fortresses, end cities, villages and every other structure, with the areas where their own mobs spawn shaded.",
+	"description": "Press B to see the bounding boxes of structures: witch huts, pillager outposts, ocean monuments, fortresses, end cities, villages and every other structure, with the areas where their own mobs spawn shaded. In singleplayer from the world itself; on servers and Realms worked out from the world's seed.",
 	"authors": [
 		"ErrolMc"
 	],

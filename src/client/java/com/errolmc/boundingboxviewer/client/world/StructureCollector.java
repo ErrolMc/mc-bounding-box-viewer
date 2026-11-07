@@ -1,12 +1,7 @@
 package com.errolmc.boundingboxviewer.client.world;
 
-import com.errolmc.boundingboxviewer.structure.Box;
-import com.errolmc.boundingboxviewer.structure.SpawnArea;
-import com.errolmc.boundingboxviewer.structure.StructureKind;
 import it.unimi.dsi.fastutil.longs.LongIterator;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
@@ -26,11 +21,9 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
-import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
-import net.minecraft.world.level.levelgen.structure.StructurePiece;
-import net.minecraft.world.level.levelgen.structure.StructureSpawnOverride;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplateManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -72,8 +65,8 @@ public final class StructureCollector {
 	public static void register() {
 		ServerChunkEvents.CHUNK_LOAD.register(StructureCollector::onChunkLoad);
 		ServerTickEvents.END_SERVER_TICK.register(StructureCollector::readPending);
-		ServerLifecycleEvents.SERVER_STARTING.register(server -> reset());
-		ServerLifecycleEvents.SERVER_STOPPED.register(server -> reset());
+		ServerLifecycleEvents.SERVER_STARTING.register(StructureCollector::reset);
+		ServerLifecycleEvents.SERVER_STOPPED.register(StructureCollector::reset);
 	}
 
 	/** Starts still waiting to be read, for the tests. */
@@ -81,7 +74,11 @@ public final class StructureCollector {
 		return PENDING.size();
 	}
 
-	private static void reset() {
+	private static void reset(MinecraftServer server) {
+		// A dedicated server in this game (the game tests start one) is multiplayer: its structures are the seed's to show.
+		if (server.isDedicatedServer()) {
+			return;
+		}
 		PENDING.clear();
 		QUEUED.clear();
 		SEEN.clear();
@@ -89,10 +86,13 @@ public final class StructureCollector {
 	}
 
 	private static void onChunkLoad(ServerLevel level, LevelChunk chunk, boolean generated) {
+		if (level.getServer().isDedicatedServer()) {
+			return;
+		}
 		ResourceKey<Level> dimension = level.dimension();
 		Registry<Structure> registry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
 		for (Map.Entry<Structure, StructureStart> entry : chunk.getAllStarts().entrySet()) {
-			record(dimension, registry, entry.getKey(), entry.getValue());
+			record(dimension, registry, level.getStructureTemplateManager(), entry.getKey(), entry.getValue());
 		}
 		long self = chunk.getPos().pack();
 		for (Map.Entry<Structure, LongSet> entry : chunk.getAllReferences().entrySet()) {
@@ -117,6 +117,9 @@ public final class StructureCollector {
 	}
 
 	private static void readPending(MinecraftServer server) {
+		if (server.isDedicatedServer()) {
+			return;
+		}
 		int loads = 0;
 		while (loads < LOADS_PER_TICK) {
 			Pending pending = PENDING.poll();
@@ -133,14 +136,16 @@ public final class StructureCollector {
 				ChunkStatus.STRUCTURE_STARTS, true);
 			StructureStart start = chunk != null ? chunk.getStartForStructure(pending.structure()) : null;
 			if (start != null) {
-				record(pending.level(), level.registryAccess().lookupOrThrow(Registries.STRUCTURE), pending.structure(), start);
+				record(pending.level(), level.registryAccess().lookupOrThrow(Registries.STRUCTURE), level.getStructureTemplateManager(), pending.structure(),
+					start);
 			} else {
 				LOGGER.debug("No {} starts in chunk {} although a chunk refers to it", pending.id(), ChunkPos.unpack(pending.chunk()));
 			}
 		}
 	}
 
-	private static void record(ResourceKey<Level> dimension, Registry<Structure> registry, Structure structure, StructureStart start) {
+	private static void record(ResourceKey<Level> dimension, Registry<Structure> registry, StructureTemplateManager templates, Structure structure,
+			StructureStart start) {
 		if (!start.isValid()) {
 			return;
 		}
@@ -148,45 +153,6 @@ public final class StructureCollector {
 		if (key == null) {
 			return;
 		}
-		String id = key.toString();
-		List<StructurePiece> pieces = start.getPieces();
-		List<BoundingBox> pieceBoxes = new ArrayList<>(pieces.size());
-		List<Box> boxes = new ArrayList<>(pieces.size());
-		for (StructurePiece piece : pieces) {
-			pieceBoxes.add(piece.getBoundingBox());
-			boxes.add(box(piece.getBoundingBox()));
-		}
-		StructureStore.put(dimension, new StructureInfo(id, StructureKind.of(id), start.getChunkPos().pack(),
-			box(bounds(structure, pieceBoxes)), boxes, spawnArea(structure)));
-	}
-
-	/**
-	 * The structure's box as the game works it out: around all its pieces, 12 blocks bigger for structures that reshape
-	 * the ground around them (villages, outposts, strongholds, ancient cities, trail ruins, trial chambers). Not
-	 * {@code StructureStart.getBoundingBox()}: that is worked out once, before pieces settle onto the ground, and kept
-	 * until the world is loaded again, so a swamp hut's would be at the height it was planned at.
-	 */
-	static BoundingBox bounds(Structure structure, List<BoundingBox> pieces) {
-		return structure.adjustBoundingBox(BoundingBox.encapsulatingBoxes(pieces).orElseThrow());
-	}
-
-	static Box box(BoundingBox box) {
-		return new Box(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ());
-	}
-
-	/** Where the structure's own mobs spawn: overrides without mobs only stop other spawns, so they don't count. */
-	static SpawnArea spawnArea(Structure structure) {
-		SpawnArea area = SpawnArea.NONE;
-		for (StructureSpawnOverride override : structure.spawnOverrides().values()) {
-			if (override.spawns().isEmpty()) {
-				continue;
-			}
-			if (override.boundingBox() == StructureSpawnOverride.BoundingBoxType.STRUCTURE) {
-				return SpawnArea.WHOLE;
-			}
-			area = SpawnArea.PIECES;
-		}
-		return area;
+		StructureStore.put(dimension, StructureInfos.of(key.toString(), structure, start.getChunkPos().pack(), StructureInfos.pieces(start, templates)));
 	}
 }
-
