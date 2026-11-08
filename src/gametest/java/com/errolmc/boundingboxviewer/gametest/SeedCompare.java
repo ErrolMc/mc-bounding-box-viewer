@@ -45,24 +45,26 @@ final class SeedCompare {
 	/**
 	 * How close seed mode's settled heights must be to the server's for a structure: no piece more than {@code worst}
 	 * blocks off, and (over 20 pieces or more) at least {@code exactPercent} of them exact. Seed mode reads the ground as
-	 * the noise makes it; caves cut through it, and trees, lakes and other structures on it, move some pieces further.
-	 * Measured over the planning test's worlds (start chunk decorated first), with room to spare: swamp huts, jungle
-	 * temples and igloos exact; desert temples, shipwrecks and ocean ruins 80 to 95% exact, a few far off (up to 22);
-	 * buried treasure within 2 nearly always, its depth under the sand being random.
+	 * the server's terrain step builds it, caves and all; what decorating puts there first (icebergs, trees, a chunk next
+	 * to it decorated earlier) moves a few pieces. Measured over the planning test's worlds (start chunk decorated first),
+	 * with room to spare: all exact but ocean ruins, 94 to 98% exact and up to 7 off (the game works a ruin's height out
+	 * again in each chunk it reaches, over what the first put down, and keeps the last); a beached shipwreck decorated
+	 * after the chunks around it, 2 off. A survey of 210 more worlds: the rest exact 99.8% of the time or more, up to 5
+	 * off; ocean ruins 92 to 99%, now and then 10 to 16 off and once 41.
 	 */
 	record Limit(int worst, int exactPercent) {
 	}
 
 	static final Map<String, Limit> LIMITS = Map.of(
-		"minecraft:swamp_hut", new Limit(4, 90),
-		"minecraft:jungle_pyramid", new Limit(4, 90),
-		"minecraft:igloo", new Limit(4, 90),
-		"minecraft:desert_pyramid", new Limit(12, 80),
-		"minecraft:shipwreck", new Limit(24, 70),
-		"minecraft:shipwreck_beached", new Limit(12, 80),
-		"minecraft:ocean_ruin_cold", new Limit(32, 85),
-		"minecraft:ocean_ruin_warm", new Limit(32, 85),
-		"minecraft:buried_treasure", new Limit(4, 15));
+		"minecraft:swamp_hut", new Limit(2, 95),
+		"minecraft:jungle_pyramid", new Limit(2, 95),
+		"minecraft:igloo", new Limit(2, 95),
+		"minecraft:desert_pyramid", new Limit(8, 95),
+		"minecraft:shipwreck", new Limit(4, 95),
+		"minecraft:shipwreck_beached", new Limit(4, 95),
+		"minecraft:ocean_ruin_cold", new Limit(16, 90),
+		"minecraft:ocean_ruin_warm", new Limit(16, 90),
+		"minecraft:buried_treasure", new Limit(2, 95));
 
 	/** How far off in height seed mode may put a settled piece of the structure. */
 	static int maxDy(String id) {

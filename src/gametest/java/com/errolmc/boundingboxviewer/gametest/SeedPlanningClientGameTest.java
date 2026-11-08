@@ -41,6 +41,8 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeResolver;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -128,6 +130,8 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 	 * worldgen threads decorate them side by side, then the rest of the chunks they cover.
 	 */
 	private static final int SETTLE_BATCH = 16;
+	/** Start chunks per structure whose terrain is compared block for block. */
+	private static final int TERRAIN_PER_STRUCTURE = 2;
 	private static final List<Heightmap.Types> HEIGHT_MAPS = List.of(Heightmap.Types.WORLD_SURFACE_WG, Heightmap.Types.OCEAN_FLOOR_WG,
 		Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
 
@@ -255,8 +259,8 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 			Map<String, List<Long>> starts = sameStarts(server, dimension, seed, new ArrayList<>(chunks), label);
 			placed.addAll(locateTheRest(server, dimension, seed, starts, perStructure, locateFrom, label));
 			starts.forEach((id, list) -> compared.merge(id, list.size(), Integer::sum));
+			List<String> here = new ArrayList<>(sameCarvedTerrain(server, dimension, seed, starts, label));
 			List<Settled> settled = settle(server, dimension, seed, starts, perStructure);
-			List<String> here = new ArrayList<>();
 			for (Settled one : settled) {
 				String problem = SeedCompare.difference(one.real(), one.mine().planned(), one.mine().settled(), stats);
 				if (problem != null) {
@@ -548,6 +552,96 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 		LOGGER.info("{}: located {} more, planned the same: {}; none near enough to find: {}", label,
 			located.values().stream().mapToInt(Integer::intValue).sum(), located, notFound);
 		return placed.stream().map(key -> key.identifier().toString()).toList();
+	}
+
+	/**
+	 * Seed mode's ground before decorating is the server's terrain step, block for block and in every height map: a
+	 * chunk's terrain is its noise, surface, caves and ravines, and the beard of the structures that reshape the ground
+	 * near it. Compared in the middle 2 x 2 chunks of each area and the start chunks of up to
+	 * {@value #TERRAIN_PER_STRUCTURE} of each structure (so villages, outposts and the rest shape some, and the settling
+	 * structures sit on them), each before the server decorates it or a chunk next to it. Gives what's different.
+	 */
+	private static List<String> sameCarvedTerrain(TestServerContext server, ResourceKey<Level> dimension, SeedDimension seed, Map<String, List<Long>> starts,
+			String label) {
+		Set<Long> chunks = new LinkedHashSet<>();
+		for (Area area : AREAS) {
+			for (int dx = 0; dx < 2; dx++) {
+				for (int dz = 0; dz < 2; dz++) {
+					chunks.add(ChunkPos.pack(area.x() + dx, area.z() + dz));
+				}
+			}
+		}
+		starts.values().forEach(list -> chunks.addAll(list.subList(0, Math.min(TERRAIN_PER_STRUCTURE, list.size()))));
+		long started = System.nanoTime();
+		int[] counts = new int[2];
+		List<String> problems = server.computeOnServer(minecraftServer -> {
+			ServerLevel level = minecraftServer.getLevel(dimension);
+			List<String> found = new ArrayList<>();
+			for (long chunk : chunks) {
+				int chunkX = ChunkPos.getX(chunk);
+				int chunkZ = ChunkPos.getZ(chunk);
+				// Decorating a chunk writes into the chunks next to it, so those mustn't be decorated either.
+				BoundingBox around = new BoundingBox((chunkX - 1) * 16, level.getMinY(), (chunkZ - 1) * 16, chunkX * 16 + 31, level.getMaxY(), chunkZ * 16 + 31);
+				ChunkAccess real = SeedCompare.decorated(level, around) ? null : level.getChunk(chunkX, chunkZ, ChunkStatus.TERRAIN, true);
+				if (real == null || real.getPersistedStatus() != ChunkStatus.TERRAIN) {
+					counts[1]++;
+					continue;
+				}
+				counts[0]++;
+				String problem = terrainDifference(level, real, seed);
+				if (problem != null) {
+					found.add("terrain in chunk " + chunkX + ", " + chunkZ + ": " + problem);
+				}
+			}
+			return found;
+		});
+		LOGGER.info("{}: terrain before decorating {} in {} chunks ({} decorated already, not compared), {} ms", label,
+			problems.isEmpty() ? "the server's" : problems.size() + " different", counts[0], counts[1], (System.nanoTime() - started) / 1_000_000);
+		problems.forEach(problem -> LOGGER.warn("{}: {}", label, problem));
+		return problems;
+	}
+
+	/** Server thread: how seed mode's version of the chunk differs from the server's, or null when it doesn't. */
+	private static String terrainDifference(ServerLevel level, ChunkAccess real, SeedDimension seed) {
+		int minX = real.getPos().getMinBlockX();
+		int minZ = real.getPos().getMinBlockZ();
+		int blocks = 0;
+		String firstBlock = null;
+		BlockPos.MutableBlockPos at = new BlockPos.MutableBlockPos();
+		for (int y = level.getMinY(); y <= level.getMaxY(); y++) {
+			for (int x = minX; x < minX + 16; x++) {
+				for (int z = minZ; z < minZ + 16; z++) {
+					BlockState there = real.getBlockState(at.set(x, y, z));
+					BlockState mine = seed.groundBlock(x, y, z);
+					if (there != mine) {
+						if (blocks++ == 0) {
+							firstBlock = "first at " + x + ", " + y + ", " + z + ": " + mine + " in seed mode, " + there + " on the server";
+						}
+					}
+				}
+			}
+		}
+		Map<Heightmap.Types, Integer> heights = new TreeMap<>();
+		String firstHeight = null;
+		for (Heightmap.Types type : Heightmap.Types.values()) {
+			for (int x = minX; x < minX + 16; x++) {
+				for (int z = minZ; z < minZ + 16; z++) {
+					int there = real.getHeight(type, x, z) + 1;
+					int mine = seed.ground(type, x, z);
+					if (there != mine) {
+						heights.merge(type, 1, Integer::sum);
+						if (firstHeight == null) {
+							firstHeight = "first " + type + " at " + x + ", " + z + ": " + mine + " in seed mode, " + there + " on the server";
+						}
+					}
+				}
+			}
+		}
+		if (blocks == 0 && heights.isEmpty()) {
+			return null;
+		}
+		return blocks + " blocks different" + (firstBlock != null ? " (" + firstBlock + ")" : "") + ", height map columns different " + heights
+			+ (firstHeight != null ? " (" + firstHeight + ")" : "");
 	}
 
 	/**

@@ -15,6 +15,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -30,6 +32,8 @@ import java.util.stream.Stream;
 public final class SeedSurveySummary {
 	private static final int WORST_SHOWN = 6;
 	private static final int BIOME_MIN = 10;
+	/** The world a problem line is about, as {@link SeedSurvey} starts them: {@code seed <seed> (<type>): }. */
+	private static final Pattern PROBLEM_WORLD = Pattern.compile("seed (\\S+) \\((\\S+)\\): ");
 
 	private record Piece(String seed, String type, String dimension, String structure, int startX, int startZ, int piece, int minX, int minZ, int maxX,
 			int maxZ, int serverY, int dy, boolean settled, String biome, boolean snapTried, Integer snapDy) {
@@ -90,7 +94,8 @@ public final class SeedSurveySummary {
 		Map<String, Piece> pieces = new LinkedHashMap<>();
 		Map<String, World> worlds = new LinkedHashMap<>();
 		boolean snapped = false;
-		Set<String> problems = new LinkedHashSet<>();
+		// By world (seed|type), so a world surveyed again has only the later survey's problems.
+		Map<String, Set<String>> problems = new LinkedHashMap<>();
 		for (Path survey : surveys) {
 			for (Path file : files(survey, "-pieces.csv")) {
 				for (String[] row : rows(file)) {
@@ -106,10 +111,12 @@ public final class SeedSurveySummary {
 			for (Path file : files(survey, "-worlds.csv")) {
 				for (String[] row : rows(file)) {
 					worlds.put(row[0] + "|" + row[1], new World(parse(row[2]), parse(row[3]), row[4]));
+					problems.remove(row[0] + "|" + row[1]);
 				}
 			}
 			for (Path file : files(survey, "-problems.txt")) {
-				Files.readAllLines(file, StandardCharsets.UTF_8).stream().filter(line -> !line.isBlank()).forEach(problems::add);
+				Files.readAllLines(file, StandardCharsets.UTF_8).stream().filter(line -> !line.isBlank())
+					.forEach(line -> problems.computeIfAbsent(worldOf(line), key -> new LinkedHashSet<>()).add(line));
 			}
 		}
 		if (merged != null) {
@@ -147,9 +154,16 @@ public final class SeedSurveySummary {
 				out.append(snaps(entry.getKey(), entry.getValue()));
 			}
 		}
-		out.append('\n').append(problems.size()).append(problems.size() == 1 ? " problem" : " problems").append(problems.isEmpty() ? "\n" : ":\n");
-		problems.forEach(problem -> out.append("  ").append(problem).append('\n'));
+		List<String> listed = problems.values().stream().flatMap(Set::stream).toList();
+		out.append('\n').append(listed.size()).append(listed.size() == 1 ? " problem" : " problems").append(listed.isEmpty() ? "\n" : ":\n");
+		listed.forEach(problem -> out.append("  ").append(problem).append('\n'));
 		return out.toString();
+	}
+
+	/** The world (seed|type) a problem line is about; the line itself for one that doesn't say. */
+	private static String worldOf(String problem) {
+		Matcher matcher = PROBLEM_WORLD.matcher(problem);
+		return matcher.lookingAt() ? matcher.group(1) + "|" + matcher.group(2) : problem;
 	}
 
 	private static String structure(String id, List<Piece> pieces) {

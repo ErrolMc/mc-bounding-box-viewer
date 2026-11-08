@@ -283,32 +283,44 @@ public final class SeedSnapping {
 	}
 
 	/**
-	 * Where the bottom of the piece's box is, now {@code at}, if its blocks are within {@link #SEARCH} of there: the
-	 * height where the most are, ties going to the nearest; null when too few are.
+	 * Where the bottom of the piece's box is, now {@code at}, if its blocks are within {@link #SEARCH} of there; null when
+	 * too few are. The game places a piece a chunk at a time and can work its height out again for each (an ocean ruin
+	 * always does), so its blocks can be at one height in one chunk and another in the next: each chunk's part is fitted
+	 * alone, and of the heights where a chunk's part is there, the one where most of the piece's blocks are wins, ties
+	 * going to the nearest. Not the best fit of the whole piece, which with its parts at two heights can come out between
+	 * them.
 	 */
 	static Integer find(Shapes shapes, Columns blocks, Box at, int foundMin) {
-		Block[][][] byPalette = new Block[shapes.palettes().size()][][];
-		int bestY = 0;
-		int bestScore = Integer.MIN_VALUE;
-		int bestSolid = 0;
-		int bestReadable = 0;
-		for (int step = 0; step <= 2 * SEARCH; step++) {
-			// 0, +1, -1, +2, -2...: the nearest first, so a tie keeps it.
-			int y = at.minY() + (step % 2 == 1 ? (step + 1) / 2 : -step / 2);
+		int tries = 2 * SEARCH + 1;
+		int palettes = shapes.palettes().size();
+		Block[][][] byPalette = new Block[palettes][][];
+		int[][] chunkByPalette = new int[palettes][];
+		Map<Long, Integer> chunkIds = new HashMap<>();
+		// Per chunk of the piece, per height tried (0, +1, -1, +2, -2...: the nearest first): matches less mismatches,
+		// solid blocks matching, solid blocks there to read.
+		List<int[][]> tallies = new ArrayList<>();
+		for (int step = 0; step < tries; step++) {
+			int y = tried(at, step);
 			int palette = shapes.palette(y);
 			Shape shape = shapes.palettes().get(palette);
 			int n = shape.size();
 			Block[][] columns = byPalette[palette];
+			int[] chunkOf = chunkByPalette[palette];
 			if (columns == null) {
 				columns = new Block[n][];
+				chunkOf = new int[n];
 				for (int i = 0; i < n; i++) {
-					columns[i] = blocks.column(at.minX() + shape.x()[i], at.minZ() + shape.z()[i]);
+					int x = at.minX() + shape.x()[i];
+					int z = at.minZ() + shape.z()[i];
+					columns[i] = blocks.column(x, z);
+					chunkOf[i] = chunkIds.computeIfAbsent(ChunkPos.pack(x >> 4, z >> 4), key -> {
+						tallies.add(new int[3][tries]);
+						return tallies.size() - 1;
+					});
 				}
 				byPalette[palette] = columns;
+				chunkByPalette[palette] = chunkOf;
 			}
-			int score = 0;
-			int solid = 0;
-			int readable = 0;
 			for (int i = 0; i < n; i++) {
 				Block[] column = columns[i];
 				if (column == null) {
@@ -318,28 +330,94 @@ public final class SeedSnapping {
 				if (index < 0 || index >= blocks.height) {
 					continue;
 				}
+				int[][] tally = tallies.get(chunkOf[i]);
 				Block want = shape.blocks()[i];
 				boolean air = want == Blocks.AIR;
 				if (!air) {
-					readable++;
+					tally[2][step]++;
 				}
 				if (column[index] == want) {
-					score++;
+					tally[0][step]++;
 					if (!air) {
-						solid++;
+						tally[1][step]++;
 					}
 				} else {
-					score--;
+					tally[0][step]--;
 				}
 			}
-			if (score > bestScore) {
-				bestScore = score;
-				bestY = y;
-				bestSolid = solid;
-				bestReadable = readable;
+		}
+		int chunks = tallies.size();
+		int[] chunkBest = new int[chunks];
+		for (int c = 0; c < chunks; c++) {
+			int[] score = tallies.get(c)[0];
+			for (int step = 1; step < tries; step++) {
+				if (score[step] > score[chunkBest[c]]) {
+					chunkBest[c] = step;
+				}
 			}
 		}
-		return bestSolid >= Math.max(1, foundMin) && bestSolid >= FOUND_SHARE * bestReadable ? bestY : null;
+		// The heights of the chunks whose part is there (any of its blocks, half of those that can be read), or if none
+		// is, of every chunk: a part mostly missing or overbuilt can fit best anywhere.
+		boolean anyThere = false;
+		boolean[] there = new boolean[chunks];
+		for (int c = 0; c < chunks; c++) {
+			int[][] tally = tallies.get(c);
+			there[c] = found(tally[1][chunkBest[c]], tally[2][chunkBest[c]], 1);
+			anyThere |= there[c];
+		}
+		int best = -1;
+		int bestScore = Integer.MIN_VALUE;
+		for (int c = 0; c < chunks; c++) {
+			if (isEmpty(tallies.get(c)) || anyThere && !there[c]) {
+				continue;
+			}
+			int step = chunkBest[c];
+			int score = 0;
+			for (int[][] tally : tallies) {
+				score += tally[0][step];
+			}
+			if (score > bestScore || score == bestScore && step < best) {
+				bestScore = score;
+				best = step;
+			}
+		}
+		if (best < 0) {
+			return null;
+		}
+		// Found by the whole piece, or by the chunks whose part is there when the rest is at another height.
+		int solid = 0;
+		int readable = 0;
+		int solidHere = 0;
+		int readableHere = 0;
+		for (int c = 0; c < chunks; c++) {
+			int[][] tally = tallies.get(c);
+			solid += tally[1][best];
+			readable += tally[2][best];
+			if (chunkBest[c] == best) {
+				solidHere += tally[1][best];
+				readableHere += tally[2][best];
+			}
+		}
+		return found(solid, readable, foundMin) || found(solidHere, readableHere, foundMin) ? tried(at, best) : null;
+	}
+
+	private static boolean found(int solid, int readable, int foundMin) {
+		return solid >= Math.max(1, foundMin) && solid >= FOUND_SHARE * readable;
+	}
+
+	/** The {@code step}th height tried for the bottom of a box now at {@code at}: 0, +1, -1, +2, -2... from there. */
+	private static int tried(Box at, int step) {
+		return at.minY() + (step % 2 == 1 ? (step + 1) / 2 : -step / 2);
+	}
+
+	/** True when none of a chunk's columns were there to read. */
+	private static boolean isEmpty(int[][] tally) {
+		for (int step = 0; step < tally[0].length; step++) {
+			if (tally[0][step] != 0 || tally[2][step] != 0) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** The block as matched: air for any air, the plain block for the game's random variants of it. */

@@ -8,8 +8,12 @@ import java.util.Map;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
 import net.minecraft.resources.Identifier;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.Mirror;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.level.levelgen.WorldgenRandom;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
@@ -29,13 +33,12 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 
 /**
  * Where the pieces that settle onto the ground end up, from the seed's terrain. A server moves them when it decorates
- * their chunk, reading the ground as it is then: these read it as the generator makes it, before lakes, trees or
- * neighbouring structures, so their height is a close estimate (x and z never change). Where the game picks a random
- * offset, it is the one the structure's start chunk gives, as if that chunk were decorated first.
+ * their chunk, reading the ground as it is then: these read it as the server's terrain step leaves it (caves and
+ * ravines carved: {@link SeedDimension#ground}), before lakes, trees, icebergs or neighbouring structures, so their
+ * height is a close estimate (x and z never change). Where the game picks a random offset, it is the one the
+ * structure's start chunk gives, as if that chunk were decorated first.
  */
 public final class SeedSettling {
-	/** How far below the sea floor buried treasure usually is: under the sand, on the stone. */
-	static final int BURIED_TREASURE_DEPTH = 3;
 	/** The planned height of igloos' templates, which the game moves to the ground from. */
 	private static final int IGLOO_HEIGHT = IglooPieces.GENERATION_HEIGHT;
 	/** Igloo templates' offsets from the top piece, as IglooPieces has them. */
@@ -84,7 +87,7 @@ public final class SeedSettling {
 			}
 			BlockPos entrance = igloo.templatePosition()
 				.offset(StructureTemplate.calculateRelativePosition(igloo.placeSettings(), new BlockPos(3 - offset.getX(), 0, -offset.getZ())));
-			int ground = dimension.height(Heightmap.Types.WORLD_SURFACE_WG, entrance.getX(), entrance.getZ());
+			int ground = dimension.ground(Heightmap.Types.WORLD_SURFACE_WG, entrance.getX(), entrance.getZ());
 			return box.moved(0, ground - IGLOO_HEIGHT - 1, 0);
 		}
 		if (piece instanceof ShipwreckPieces.ShipwreckPiece ship) {
@@ -95,14 +98,41 @@ public final class SeedSettling {
 			Vec3i size = ruin.template().getSize();
 			BlockPos corner = StructureTemplate.transform(new BlockPos(size.getX() - 1, 0, size.getZ() - 1), Mirror.NONE, ruin.getRotation(), BlockPos.ZERO)
 				.offset(origin);
-			int y = Settling.oceanRuin(origin.getX(), origin.getZ(), corner.getX(), corner.getZ(), heights(dimension, Heightmap.Types.OCEAN_FLOOR_WG));
+			int y = Settling.oceanRuin(origin.getX(), origin.getZ(), corner.getX(), corner.getZ(),
+				dimension.ground(Heightmap.Types.OCEAN_FLOOR_WG, origin.getX(), origin.getZ()), (x, z, top) -> floorBelow(dimension, x, z, top));
 			return box.moved(0, y - origin.getY(), 0);
 		}
 		if (piece instanceof BuriedTreasurePieces.BuriedTreasurePiece) {
-			int floor = dimension.height(Heightmap.Types.OCEAN_FLOOR_WG, box.minX(), box.minZ());
-			return new BoundingBox(new BlockPos(box.minX(), floor - BURIED_TREASURE_DEPTH, box.minZ()));
+			BlockPos chest = buriedTreasure(dimension, box.minX(), box.minZ());
+			return chest != null ? new BoundingBox(chest) : box;
 		}
 		return box;
+	}
+
+	/**
+	 * Where BuriedTreasurePiece digs its chest in: down from the sea floor to the first block on sandstone or stone
+	 * (andesite, granite, diorite too). Null if there's none, when the game places nothing.
+	 */
+	private static BlockPos buriedTreasure(SeedDimension dimension, int x, int z) {
+		int minY = dimension.heightAccessor().getMinY();
+		for (int y = dimension.ground(Heightmap.Types.OCEAN_FLOOR_WG, x, z); y > minY; y--) {
+			BlockState below = dimension.groundBlock(x, y - 1, z);
+			if (below.is(Blocks.SANDSTONE) || below.is(Blocks.STONE) || below.is(Blocks.ANDESITE) || below.is(Blocks.GRANITE) || below.is(Blocks.DIORITE)) {
+				return new BlockPos(x, y, z);
+			}
+		}
+		return null;
+	}
+
+	/** As OceanRuinPiece looks down a column: through air, water and ice to the floor, no lower than one above the bottom. */
+	private static int floorBelow(SeedDimension dimension, int x, int z, int top) {
+		int bottom = dimension.heightAccessor().getMinY() + 1;
+		int y = top;
+		BlockState state = dimension.groundBlock(x, y, z);
+		while ((state.isAir() || state.getFluidState().is(FluidTags.WATER) || state.is(BlockTags.ICE)) && y > bottom) {
+			state = dimension.groundBlock(x, --y, z);
+		}
+		return y;
 	}
 
 	/** True for the pieces whose height {@link #settled} estimates. */
@@ -122,7 +152,7 @@ public final class SeedSettling {
 		Heightmap.Types type = beached ? Heightmap.Types.WORLD_SURFACE_WG : Heightmap.Types.OCEAN_FLOOR_WG;
 		Vec3i size = ship.template().getSize();
 		if (size.getX() * size.getZ() == 0) {
-			return dimension.height(type, origin.getX(), origin.getZ());
+			return dimension.ground(type, origin.getX(), origin.getZ());
 		}
 		int x2 = origin.getX() + size.getX() - 1;
 		int z2 = origin.getZ() + size.getZ() - 1;
@@ -148,6 +178,6 @@ public final class SeedSettling {
 	}
 
 	private static Settling.Heights heights(SeedDimension dimension, Heightmap.Types type) {
-		return (x, z) -> dimension.height(type, x, z);
+		return (x, z) -> dimension.ground(type, x, z);
 	}
 }

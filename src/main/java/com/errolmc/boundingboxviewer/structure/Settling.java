@@ -2,15 +2,21 @@ package com.errolmc.boundingboxviewer.structure;
 
 /**
  * Where pieces that settle onto the ground end up, worked out the way the game does it when their chunk is decorated
- * but from a height map given here (in seed mode, the terrain the generator makes before anything is built on it).
- * Each method returns the new height of the piece's bottom or of its template's corner; the piece's box moves by the
- * difference.
+ * but from the ground given here (in seed mode, the chunk's terrain as a server builds it, before anything is built on
+ * it). Each method returns the new height of the piece's bottom or of its template's corner; the piece's box moves by
+ * the difference.
  */
 public final class Settling {
 	/** The ground height at a column: the y of the first block above the ground, as a height map gives it. */
 	@FunctionalInterface
 	public interface Heights {
 		int at(int x, int z);
+	}
+
+	/** The sea floor in a column: the y of the first block down from {@code top} that isn't water, air or ice. */
+	@FunctionalInterface
+	public interface Floor {
+		int below(int x, int z, int top);
 	}
 
 	private Settling() {
@@ -50,17 +56,17 @@ public final class Settling {
 	 *
 	 * @param x the template's corner
 	 * @param cornerX the opposite corner, after the ruin's rotation
-	 * @param floor the ocean floor height map: one above the top block that isn't water or air
+	 * @param corner the ocean floor height map at the template's corner: one above the top block there that blocks motion
+	 * @param floor the floor in each column, looking down from one below the corner's height
 	 */
-	public static int oceanRuin(int x, int z, int cornerX, int cornerZ, Heights floor) {
-		int corner = floor.at(x, z);
+	public static int oceanRuin(int x, int z, int cornerX, int cornerZ, int corner, Floor floor) {
 		int top = corner - 1;
 		int lowest = Integer.MAX_VALUE;
 		int deeper = 0;
 		for (int pz = Math.min(z, cornerZ); pz <= Math.max(z, cornerZ); pz++) {
 			for (int px = Math.min(x, cornerX); px <= Math.max(x, cornerX); px++) {
 				// Down from the corner's floor through water: stops on this column's floor, or at once if that is higher.
-				int floorY = Math.min(top, floor.at(px, pz) - 1);
+				int floorY = floor.below(px, pz, top);
 				lowest = Math.min(lowest, floorY);
 				if (floorY < top - 2) {
 					deeper++;

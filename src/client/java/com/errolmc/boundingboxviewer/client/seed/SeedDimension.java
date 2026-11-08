@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 import net.minecraft.core.Holder;
 import net.minecraft.core.Registry;
 import net.minecraft.core.RegistryAccess;
@@ -17,6 +18,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelHeightAccessor;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.world.level.chunk.PalettedContainerFactory;
@@ -61,6 +63,7 @@ public final class SeedDimension {
 	private final PalettedContainerFactory containers;
 	/** Each structure's place among those placed in the same decoration step, which seeds its pieces' random. */
 	private final Map<Structure, Integer> decorationIndex = new HashMap<>();
+	private final SeedTerrain terrain;
 
 	SeedDimension(VanillaWorldgen worldgen, long seed, ResourceKey<Level> level, LevelStem stem) {
 		this.seed = seed;
@@ -80,6 +83,7 @@ public final class SeedDimension {
 		// As ChunkGenerator.applyBiomeDecoration numbers them: in registry order within each step.
 		Map<Integer, Integer> nextIndex = new HashMap<>();
 		structures.stream().forEach(structure -> decorationIndex.put(structure, nextIndex.merge(structure.step().ordinal(), 1, Integer::sum) - 1));
+		this.terrain = new SeedTerrain(this);
 	}
 
 	public long seed() {
@@ -125,9 +129,23 @@ public final class SeedDimension {
 		return key != null ? key.toString() : "";
 	}
 
-	/** The ground height at a column as a height map of this type would give it, from the terrain alone. */
+	/** The ground height at a column as a height map of this type would give it, from the terrain's noise alone. */
 	public int height(Heightmap.Types type, int x, int z) {
 		return generator.getBaseHeight(x, z, type, heightAccessor, randomState);
+	}
+
+	/**
+	 * The ground height at a column as the game reads it while decorating the chunk (the first free block above), on
+	 * the chunk's terrain as a server builds it: caves and ravines carved, villages and the like shaping it; nothing
+	 * decorating adds.
+	 */
+	public int ground(Heightmap.Types type, int x, int z) {
+		return terrain.height(type, x, z);
+	}
+
+	/** The block there on the chunk's terrain as a server builds it, before decorating (see {@link #ground}). */
+	public BlockState groundBlock(int x, int y, int z) {
+		return terrain.block(x, y, z);
 	}
 
 	/**
@@ -136,12 +154,18 @@ public final class SeedDimension {
 	 * by weight with a random seeded from the chunk, the next tried when one can't go there.
 	 */
 	public List<Planned> plan(int chunkX, int chunkZ) {
+		return plan(chunkX, chunkZ, structure -> true);
+	}
+
+	/** As {@link #plan(int, int)}, only the structure sets with a structure that passes {@code only}, and only those starts. */
+	List<Planned> plan(int chunkX, int chunkZ, Predicate<Structure> only) {
 		ChunkPos chunk = new ChunkPos(chunkX, chunkZ);
 		Climate.Sampler sampler = null;
 		List<Planned> planned = new ArrayList<>(1);
 		for (Holder<StructureSet> set : structureState.possibleStructureSets()) {
 			StructurePlacement placement = set.value().placement();
-			if (!placement.isStructureChunk(structureState, chunkX, chunkZ)) {
+			if (set.value().structures().stream().noneMatch(entry -> only.test(entry.structure().value()))
+				|| !placement.isStructureChunk(structureState, chunkX, chunkZ)) {
 				continue;
 			}
 			if (sampler == null) {
@@ -151,7 +175,7 @@ public final class SeedDimension {
 			List<StructureSet.StructureSelectionEntry> entries = set.value().structures();
 			if (entries.size() == 1) {
 				Planned start = tryStart(entries.getFirst(), chunk, sampler);
-				if (start != null) {
+				if (start != null && only.test(start.structure().value())) {
 					planned.add(start);
 				}
 				continue;
@@ -176,7 +200,9 @@ public final class SeedDimension {
 				StructureSet.StructureSelectionEntry selected = options.get(index);
 				Planned start = tryStart(selected, chunk, sampler);
 				if (start != null) {
-					planned.add(start);
+					if (only.test(start.structure().value())) {
+						planned.add(start);
+					}
 					break;
 				}
 				options.remove(index);
