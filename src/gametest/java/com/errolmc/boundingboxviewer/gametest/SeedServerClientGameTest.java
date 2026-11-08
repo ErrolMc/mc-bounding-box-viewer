@@ -6,6 +6,7 @@ import com.errolmc.boundingboxviewer.client.config.BoxConfig;
 import com.errolmc.boundingboxviewer.client.overlay.BoxOverlay;
 import com.errolmc.boundingboxviewer.client.seed.SeedDimension;
 import com.errolmc.boundingboxviewer.client.seed.SeedMode;
+import com.errolmc.boundingboxviewer.client.seed.SeedSnapping;
 import com.errolmc.boundingboxviewer.client.world.StructureInfo;
 import com.errolmc.boundingboxviewer.client.world.StructureStore;
 import com.errolmc.boundingboxviewer.structure.WorldType;
@@ -240,7 +241,8 @@ public class SeedServerClientGameTest implements FabricClientGameTest {
 	/**
 	 * Every structure the server starts within {@link #CHECK_RADIUS} chunks of the player, against seed mode's: seed
 	 * mode must have each (see {@link SeedCompare#difference}) and nothing more. Buried treasure whose chunk is here
-	 * must be exactly on its chest.
+	 * must be exactly on its chest, and other settling structures whose chunks are all here on their blocks (see
+	 * {@link SeedCompare#onBlocks}).
 	 */
 	private static Comparison compare(ClientGameTestContext context, TestDedicatedServerContext server, ResourceKey<Level> dimension,
 			SeedCompare.Stats stats) {
@@ -264,13 +266,18 @@ public class SeedServerClientGameTest implements FabricClientGameTest {
 		ChunkPos center = side.center();
 		Map<String, StructureInfo> shown = new LinkedHashMap<>();
 		Set<String> treasureHere = new HashSet<>();
+		Set<String> blocksHere = new HashSet<>();
 		context.runOnClient(minecraft -> {
 			for (StructureInfo info : StructureStore.in(dimension)) {
 				if (Math.abs(ChunkPos.getX(info.startChunk()) - center.x()) <= CHECK_RADIUS && Math.abs(ChunkPos.getZ(info.startChunk()) - center.z()) <= CHECK_RADIUS) {
 					String key = info.id() + "@" + info.startChunk();
 					shown.put(key, info);
-					if (info.id().equals(BURIED_TREASURE) && minecraft.level.hasChunk(info.bounds().minX() >> 4, info.bounds().minZ() >> 4)) {
+					if (info.id().equals(BURIED_TREASURE) && SeedMode.clientChunk(minecraft.level, info.bounds().minX() >> 4, info.bounds().minZ() >> 4) != null) {
 						treasureHere.add(key);
+					}
+					if (SeedCompare.snaps(info.id())
+						&& SeedSnapping.chunks(info).stream().allMatch(chunk -> SeedMode.clientChunk(minecraft.level, chunk.x(), chunk.z()) != null)) {
+						blocksHere.add(key);
 					}
 				}
 			}
@@ -284,6 +291,22 @@ public class SeedServerClientGameTest implements FabricClientGameTest {
 			String problem = SeedCompare.difference(start, planned == null ? null : planned.planned(), mine, stats);
 			if (problem == null && treasureHere.contains(entry.getKey()) && start.decorated().getFirst() && !mine.equals(start.info())) {
 				problem = start.at() + " is at " + mine.bounds() + " in seed mode, not on its chest at " + start.info().bounds();
+			}
+			if (problem == null && blocksHere.contains(entry.getKey()) && !mine.pieces().equals(start.info().pieces())) {
+				SeedSnapping.Columns blocks = context.computeOnClient(minecraft -> SeedCompare.clientBlocks(minecraft.level, mine));
+				List<String> wrong = blocks == null ? List.of("its chunks went")
+					: SeedCompare.onBlocks(seed, mine, mine.pieces(), null, start.info().pieces(), blocks).wrong();
+				if (!wrong.isEmpty()) {
+					// What's there, to see why: put on the server's blocks instead, and the blocks in the server's box on each side.
+					StructureInfo truth = start.info();
+					SeedSnapping.Columns serverColumns = server.computeOnServer(minecraftServer -> SeedCompare.serverBlocks(minecraftServer.getLevel(dimension), mine));
+					SeedSnapping.Snapped onServer = serverColumns == null ? null : SeedSnapping.snap(seed, mine, serverColumns);
+					String clientHas = context.computeOnClient(minecraft -> SeedCompare.blocksIn(minecraft.level, truth.bounds()));
+					String serverHas = server.computeOnServer(minecraftServer -> SeedCompare.blocksIn(minecraftServer.getLevel(dimension), truth.bounds()));
+					problem = start.at() + " has pieces " + mine.pieces() + " in seed mode, not on their blocks: " + String.join(", ", wrong)
+						+ "; on the server's blocks " + (onServer == null ? "(not decorated)" : onServer.info().pieces() + " found " + onServer.found())
+						+ "; in the server's box the client has " + clientHas + "; the server " + serverHas;
+				}
 			}
 			if (problem != null) {
 				problems.add(problem);

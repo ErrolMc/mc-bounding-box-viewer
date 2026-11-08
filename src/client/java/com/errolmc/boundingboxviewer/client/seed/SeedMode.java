@@ -8,6 +8,7 @@ import com.errolmc.boundingboxviewer.structure.Box;
 import com.errolmc.boundingboxviewer.structure.ServerKey;
 import com.errolmc.boundingboxviewer.structure.WorldType;
 import java.net.SocketAddress;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -28,6 +29,7 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +41,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>The seed is saved per server ({@link ServerKey}): picked up from {@code /seed}'s reply, or given with
  * {@code /boxes seed}. Planning is exact; the pieces that settle onto the ground when their chunk is decorated are put
- * on the terrain the seed makes (see {@link SeedSettling}), and buried treasure on its chest once its chunk is here.
+ * on the terrain the seed makes (see {@link SeedSettling}), then on their own blocks as their chunks get here (see
+ * {@link SeedSnapping}), and buried treasure on its chest once its chunk is here.
  */
 public final class SeedMode {
 	public enum Status {
@@ -67,13 +70,21 @@ public final class SeedMode {
 	static final int REACH_CHUNKS = 8;
 	private static final String BURIED_TREASURE = "minecraft:buried_treasure";
 
+	/** Snap jobs waiting or running at a time: one is read from the chunks a tick, so a few keep the worker busy. */
+	private static final int MAX_SNAPPING = 2;
+
 	/** A chunk handed to the workers, for one seed. */
 	private record Task(int epoch, ResourceKey<Level> level, long chunk) {
+	}
+
+	/** A structure with pieces to put on their blocks, for one seed. */
+	private record Snap(int epoch, ResourceKey<Level> level, String id, long chunk) {
 	}
 
 	/** Guards {@link #epoch} changes against workers adding to the store for a seed that's gone. */
 	private static final Object LOCK = new Object();
 	private static ExecutorService pool;
+	private static ExecutorService snapPool;
 	/** Counts seed changes; workers drop what they found for an older one. */
 	private static volatile int epoch;
 	private static volatile SeedWorld world;
@@ -87,6 +98,14 @@ public final class SeedMode {
 	private static final AtomicInteger IN_FLIGHT = new AtomicInteger();
 	/** Buried treasure whose chest has been found, so its box is where it really is. */
 	private static final Set<Task> TREASURES_FOUND = ConcurrentHashMap.newKeySet();
+	/**
+	 * Structures whose pieces aren't on their blocks yet, with how many of their chunks were here last time they were
+	 * tried (so they're tried again only once more are); dropped once tried with all of them here.
+	 */
+	private static final Map<Snap, Integer> TO_SNAP = new ConcurrentHashMap<>();
+	private static final Set<Snap> SNAPPING = ConcurrentHashMap.newKeySet();
+	/** True while a structure in {@link #TO_SNAP} has more of its chunks here than last time. Client thread writes. */
+	private static volatile boolean snapsWaiting;
 	private static volatile boolean changed;
 	private static volatile boolean caughtUp;
 	private static int ticksUntilScan;
@@ -135,7 +154,15 @@ public final class SeedMode {
 	 * message).
 	 */
 	public static boolean idle() {
-		return status == Status.READY && caughtUp && IN_FLIGHT.get() == 0;
+		return status == Status.READY && caughtUp && IN_FLIGHT.get() == 0 && SNAPPING.isEmpty() && !snapsWaiting;
+	}
+
+	/**
+	 * The chunk if the client has it, else null. Not {@code ClientLevel.hasChunk}, which is always true (and
+	 * {@code getChunk} then gives an empty stand-in, all air).
+	 */
+	public static LevelChunk clientChunk(ClientLevel level, int chunkX, int chunkZ) {
+		return level.getChunkSource().getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
 	}
 
 	/**
@@ -209,8 +236,10 @@ public final class SeedMode {
 				StructureStore.clear();
 			}
 			DONE.clear();
+			TO_SNAP.clear();
 		}
 		TREASURES_FOUND.clear();
+		snapsWaiting = false;
 		world = null;
 		current = null;
 		caughtUp = false;
@@ -265,6 +294,18 @@ public final class SeedMode {
 		return pool;
 	}
 
+	private static synchronized ExecutorService snapPool() {
+		if (snapPool == null) {
+			snapPool = Executors.newSingleThreadExecutor(runnable -> {
+				Thread thread = new Thread(runnable, "Bounding Box Viewer snapping");
+				thread.setDaemon(true);
+				thread.setPriority(Thread.MIN_PRIORITY);
+				return thread;
+			});
+		}
+		return snapPool;
+	}
+
 	private static void tick(Minecraft minecraft) {
 		if (serverKey == null) {
 			return;
@@ -277,10 +318,12 @@ public final class SeedMode {
 		ClientLevel clientLevel = minecraft.level;
 		if (seedWorld == null || !BoxOverlay.isEnabled() || clientLevel == null || minecraft.player == null) {
 			caughtUp = false;
+			snapsWaiting = false;
 			return;
 		}
 		ResourceKey<Level> level = clientLevel.dimension();
 		ChunkPos center = minecraft.player.chunkPosition();
+		snapNext(seedWorld, clientLevel, level, minecraft.player.blockPosition());
 		boolean moved = !center.equals(lastCenter) || level != lastLevel;
 		if (caughtUp && !moved && --ticksUntilScan > 0) {
 			return;
@@ -330,15 +373,22 @@ public final class SeedMode {
 				return;
 			}
 			SeedDimension dimension = seedWorld.dimension(task.level());
-			List<StructureInfo> infos = dimension != null
-				? dimension.structuresStartingIn(ChunkPos.getX(task.chunk()), ChunkPos.getZ(task.chunk()))
+			List<SeedDimension.Planned> planned = dimension != null
+				? dimension.plan(ChunkPos.getX(task.chunk()), ChunkPos.getZ(task.chunk()))
 				: List.of();
+			List<StructureInfo> infos = new ArrayList<>(planned.size());
+			for (SeedDimension.Planned start : planned) {
+				infos.add(dimension.info(start));
+			}
 			synchronized (LOCK) {
 				if (epoch != task.epoch()) {
 					return;
 				}
-				for (StructureInfo info : infos) {
-					StructureStore.put(task.level(), info);
+				for (int i = 0; i < infos.size(); i++) {
+					StructureStore.put(task.level(), infos.get(i));
+					if (SeedSnapping.snaps(planned.get(i))) {
+						TO_SNAP.put(new Snap(task.epoch(), task.level(), infos.get(i).id(), task.chunk()), 0);
+					}
 				}
 				DONE.computeIfAbsent(task.level(), key -> ConcurrentHashMap.newKeySet()).add(task.chunk());
 			}
@@ -360,6 +410,87 @@ public final class SeedMode {
 	}
 
 	/**
+	 * Reads the blocks of the nearest structure in {@link #TO_SNAP} with more of its chunks here than last time, for
+	 * the snapping worker to put its pieces on them (one a tick, as reading takes the client thread).
+	 */
+	private static void snapNext(SeedWorld seedWorld, ClientLevel clientLevel, ResourceKey<Level> level, BlockPos player) {
+		int taskEpoch = epoch;
+		Snap next = null;
+		StructureInfo nextInfo = null;
+		int nextLoaded = 0;
+		int nextChunks = 0;
+		double nextDistance = Double.MAX_VALUE;
+		boolean waiting = false;
+		for (Map.Entry<Snap, Integer> entry : TO_SNAP.entrySet()) {
+			Snap snap = entry.getKey();
+			if (snap.epoch() != taskEpoch || snap.level() != level || SNAPPING.contains(snap)) {
+				continue;
+			}
+			StructureInfo info = StructureStore.get(level, snap.id(), snap.chunk());
+			if (info == null) {
+				continue;
+			}
+			List<ChunkPos> chunks = SeedSnapping.chunks(info);
+			int loaded = 0;
+			for (ChunkPos chunk : chunks) {
+				if (clientChunk(clientLevel, chunk.x(), chunk.z()) != null) {
+					loaded++;
+				}
+			}
+			if (loaded <= entry.getValue()) {
+				continue;
+			}
+			waiting = true;
+			double dx = (info.bounds().minX() + info.bounds().maxX()) / 2.0 - player.getX();
+			double dz = (info.bounds().minZ() + info.bounds().maxZ()) / 2.0 - player.getZ();
+			double distance = dx * dx + dz * dz;
+			if (distance < nextDistance) {
+				next = snap;
+				nextInfo = info;
+				nextLoaded = loaded;
+				nextChunks = chunks.size();
+				nextDistance = distance;
+			}
+		}
+		snapsWaiting = waiting;
+		SeedDimension dimension = seedWorld.dimension(level);
+		if (next == null || dimension == null || SNAPPING.size() >= MAX_SNAPPING) {
+			return;
+		}
+		SeedSnapping.Columns blocks = SeedSnapping.read(nextInfo, clientLevel, (x, z) -> clientChunk(clientLevel, x, z));
+		Snap snap = next;
+		StructureInfo shown = nextInfo;
+		boolean all = nextLoaded >= nextChunks;
+		TO_SNAP.put(snap, nextLoaded);
+		SNAPPING.add(snap);
+		snapPool().execute(() -> {
+			try {
+				if (epoch != snap.epoch()) {
+					return;
+				}
+				SeedSnapping.Snapped snapped = SeedSnapping.snap(dimension, shown, blocks);
+				synchronized (LOCK) {
+					if (epoch != snap.epoch()) {
+						return;
+					}
+					if (!snapped.info().equals(shown)) {
+						StructureStore.put(snap.level(), snapped.info());
+						changed = true;
+					}
+					if (all) {
+						TO_SNAP.remove(snap);
+					}
+				}
+			} catch (RuntimeException e) {
+				LOGGER.error("Could not put {} at chunk {} on its blocks", snap.id(), ChunkPos.unpack(snap.chunk()), e);
+				TO_SNAP.remove(snap);
+			} finally {
+				SNAPPING.remove(snap);
+			}
+		});
+	}
+
+	/**
 	 * Buried treasure is a chest dug into the stone under the sand, which the terrain alone doesn't show: once its
 	 * chunk is here, its box goes on the chest.
 	 */
@@ -373,10 +504,10 @@ public final class SeedMode {
 			Box box = info.bounds();
 			int chunkX = box.minX() >> 4;
 			int chunkZ = box.minZ() >> 4;
-			if (TREASURES_FOUND.contains(key) || !clientLevel.hasChunk(chunkX, chunkZ)) {
+			LevelChunk chunk = TREASURES_FOUND.contains(key) ? null : clientChunk(clientLevel, chunkX, chunkZ);
+			if (chunk == null) {
 				continue;
 			}
-			LevelChunk chunk = clientLevel.getChunk(chunkX, chunkZ);
 			int top = Math.min(clientLevel.getMaxY(), box.minY() + 16);
 			int bottom = Math.max(clientLevel.getMinY(), box.minY() - 32);
 			BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos(box.minX(), top, box.minZ());

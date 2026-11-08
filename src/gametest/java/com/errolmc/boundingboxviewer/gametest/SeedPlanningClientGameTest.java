@@ -4,6 +4,7 @@ import static com.errolmc.boundingboxviewer.gametest.TestWorlds.check;
 
 import com.errolmc.boundingboxviewer.client.seed.SeedDimension;
 import com.errolmc.boundingboxviewer.client.seed.SeedSettling;
+import com.errolmc.boundingboxviewer.client.seed.SeedSnapping;
 import com.errolmc.boundingboxviewer.client.seed.SeedWorld;
 import com.errolmc.boundingboxviewer.client.world.StructureInfo;
 import com.errolmc.boundingboxviewer.structure.Box;
@@ -43,6 +44,7 @@ import net.minecraft.world.level.biome.BiomeResolver;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.Heightmap;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructurePiece;
 import net.minecraft.world.level.levelgen.structure.StructureSet;
@@ -144,24 +146,29 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 
 	private static void compareAll(ClientGameTestContext context) {
 		SeedCompare.Stats settled = new SeedCompare.Stats("decorated on the server, start chunk first");
+		SeedCompare.Snaps snaps = new SeedCompare.Snaps("decorated on the server");
+		List<String> snapProblems = new ArrayList<>();
 		Map<String, Integer> compared = new TreeMap<>();
 		Set<String> placed = new TreeSet<>();
 		for (World w : WORLDS) {
 			long started = System.nanoTime();
 			SeedWorld seedWorld = SeedWorld.create(w.seed(), w.type());
 			try (TestSingleplayerContext world = TestWorlds.builder(context, w.seed(), w.type()).create()) {
-				compareWorld(world.getServer(), seedWorld, w, SETTLED_PER_STRUCTURE, LOCATE_FROM, settled, compared, placed, null);
+				compareWorld(world.getServer(), seedWorld, w, SETTLED_PER_STRUCTURE, LOCATE_FROM, settled, snaps, snapProblems, compared, placed, null);
 			}
 			LOGGER.info("{}: seed mode matches the server, {} s", w, (System.nanoTime() - started) / 1_000_000_000);
 		}
 		LOGGER.info("Structure starts compared with the server, all worlds: {}", compared);
 		settled.log(LOGGER);
+		snaps.log(LOGGER);
+		snapProblems.forEach(problem -> LOGGER.warn("Seed mode put on the blocks: {}", problem));
 		List<String> inexact = settled.tooFewExact();
 		check(inexact.isEmpty(), "settled heights too often off: " + inexact);
 		Set<String> missing = new TreeSet<>(placed);
 		missing.removeAll(compared.keySet());
 		check(missing.isEmpty(), "structures no world compared: " + missing);
 		check(SeedCompare.SETTLING.stream().allMatch(compared::containsKey), "a settling structure wasn't compared: " + compared.keySet());
+		check(snapProblems.isEmpty(), "seed mode put on the blocks: " + String.join("; ", snapProblems));
 	}
 
 	/**
@@ -178,6 +185,7 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 			World w = new World(seeds.get(i), survey.type());
 			long started = System.nanoTime();
 			SeedCompare.Stats stats = new SeedCompare.Stats(w.toString());
+			SeedCompare.Snaps snaps = new SeedCompare.Snaps(w.toString());
 			List<String> problems = new ArrayList<>();
 			String result;
 			Path save = null;
@@ -188,7 +196,10 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 				try (TestSingleplayerContext world = TestWorlds.builder(context, w.seed(), w.type()).create()) {
 					TestServerContext server = world.getServer();
 					save = server.computeOnServer(minecraftServer -> minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize());
-					problems.addAll(compareWorld(server, seedWorld, w, survey.perStructure(), from, stats, new TreeMap<>(), new TreeSet<>(), survey));
+					List<String> snapProblems = new ArrayList<>();
+					problems.addAll(compareWorld(server, seedWorld, w, survey.perStructure(), from, stats, snaps, snapProblems, new TreeMap<>(), new TreeSet<>(),
+						survey));
+					problems.addAll(snapProblems);
 				}
 				result = problems.isEmpty() ? "ok" : "over limits";
 			} catch (AssertionError | RuntimeException e) {
@@ -223,10 +234,12 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 
 	/**
 	 * Every comparison for one world, each dimension. Settling structures too far off (over {@link SeedCompare#LIMITS})
-	 * fail the test or, with a survey, are given back; the survey also gets every settled piece.
+	 * fail the test or, with a survey, are given back; the survey also gets every settled piece. Each is put on its
+	 * blocks too, as seed mode does once the client has its chunks: what's wrong with that goes to {@code snapProblems}.
 	 */
 	private static List<String> compareWorld(TestServerContext server, SeedWorld seedWorld, World w, int perStructure, List<BlockPos> locateFrom,
-			SeedCompare.Stats stats, Map<String, Integer> compared, Set<String> placed, SeedSurvey survey) {
+			SeedCompare.Stats stats, SeedCompare.Snaps snaps, List<String> snapProblems, Map<String, Integer> compared, Set<String> placed,
+			SeedSurvey survey) {
 		List<String> problems = new ArrayList<>();
 		for (ResourceKey<Level> dimension : DIMENSIONS) {
 			SeedDimension seed = seedWorld.dimension(dimension);
@@ -249,8 +262,13 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 				if (problem != null) {
 					here.add(problem);
 				}
+				SeedSnapping.Snapped snapped = one.blocks() != null ? SeedSnapping.snap(seed, one.mine().settled(), one.blocks()) : null;
+				String snapProblem = snapped != null ? SeedCompare.snapDifference(seed, one.real(), one.mine().settled(), snapped, one.blocks(), snaps) : null;
+				if (snapProblem != null) {
+					snapProblems.add(label + ": " + snapProblem);
+				}
 				if (survey != null) {
-					survey.structure(w, dimension, one.real(), one.mine(), one.biomes());
+					survey.structure(w, dimension, one.real(), one.mine(), snapped, one.biomes());
 				}
 			}
 			LOGGER.info("{}: {} settling structures decorated and compared", label, settled.size());
@@ -419,7 +437,7 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 					+ " in seed mode, " + expected.keySet() + " on the server");
 				for (Map.Entry<String, StructureInfo> entry : expected.entrySet()) {
 					StructureInfo mine = planned.get(entry.getKey());
-					check(mine.equals(entry.getValue()), label + ": " + entry.getKey() + " starting in " + ChunkPos.unpack(chunk) + " is planned "
+					check(samePlan(server, dimension, mine, entry.getValue()), label + ": " + entry.getKey() + " starting in " + ChunkPos.unpack(chunk) + " is planned "
 						+ describe(mine) + " in seed mode, " + describe(entry.getValue()) + " on the server");
 					starts.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).add(chunk);
 				}
@@ -444,6 +462,35 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 			}
 		});
 		return starts;
+	}
+
+	/**
+	 * Seed mode's plan is the server's start. A structure that settles may have settled already where the server has
+	 * decorated its chunks (around spawn, which on some seeds is 2,000 blocks out): such a piece needs only the same
+	 * footprint, how far it moved being for the settling comparison.
+	 */
+	private static boolean samePlan(TestServerContext server, ResourceKey<Level> dimension, StructureInfo mine, StructureInfo real) {
+		if (mine.equals(real)) {
+			return true;
+		}
+		if (!SeedCompare.SETTLING.contains(real.id()) || !mine.id().equals(real.id()) || mine.kind() != real.kind() || mine.startChunk() != real.startChunk()
+				|| !Objects.equals(mine.spawnArea(), real.spawnArea()) || mine.pieces().size() != real.pieces().size()) {
+			return false;
+		}
+		List<Boolean> decorated = server.computeOnServer(minecraftServer -> {
+			ServerLevel level = minecraftServer.getLevel(dimension);
+			return real.pieces().stream()
+				.map(piece -> SeedCompare.decorated(level, new BoundingBox(piece.minX(), piece.minY(), piece.minZ(), piece.maxX(), piece.maxY(), piece.maxZ())))
+				.toList();
+		});
+		for (int i = 0; i < real.pieces().size(); i++) {
+			Box planned = mine.pieces().get(i);
+			Box there = real.pieces().get(i);
+			if (!planned.equals(there) && !(decorated.get(i) && SeedCompare.sameFootprint(planned, there))) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private static String describe(StructureInfo info) {
@@ -488,7 +535,7 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 				}
 				SeedCompare.SeedStart mine = SeedCompare.seedStart(seed, found.id(), found.startChunk());
 				check(mine != null, label + ": seed mode plans no " + found.id() + " in " + ChunkPos.unpack(found.startChunk()) + ", where locate found one");
-				check(mine.planned().equals(found), label + ": the nearest " + found.id() + " to " + from.toShortString() + " is planned "
+				check(samePlan(server, dimension, mine.planned(), found), label + ": the nearest " + found.id() + " to " + from.toShortString() + " is planned "
 					+ describe(mine.planned()) + " in seed mode, " + describe(found) + " on the server");
 				have.add(found.startChunk());
 				located.merge(key.identifier().getPath(), 1, Integer::sum);
@@ -503,8 +550,11 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 		return placed.stream().map(key -> key.identifier().toString()).toList();
 	}
 
-	/** A settling structure decorated on the server, seed mode's version of it, and the biome at each piece. */
-	private record Settled(SeedCompare.ServerStart real, SeedCompare.SeedStart mine, List<String> biomes) {
+	/**
+	 * A settling structure decorated on the server, seed mode's version of it, the biome at each piece, and the blocks
+	 * under seed mode's pieces (null for buried treasure, or a chunk not decorated).
+	 */
+	private record Settled(SeedCompare.ServerStart real, SeedCompare.SeedStart mine, List<String> biomes, SeedSnapping.Columns blocks) {
 	}
 
 	/** A settling structure to decorate: its id, start chunk, seed mode's version, and the chunks its planned box covers. */
@@ -572,7 +622,8 @@ public class SeedPlanningClientGameTest implements FabricClientGameTest {
 					for (Box piece : real.info().pieces()) {
 						biomes.add(key(level.getBiome(BlockPos.containing(piece.centerX(), piece.minY(), piece.centerZ()))));
 					}
-					done.add(new Settled(real, one.mine(), biomes));
+					SeedSnapping.Columns blocks = SeedCompare.snaps(one.id()) ? SeedCompare.serverBlocks(level, one.mine().settled()) : null;
+					done.add(new Settled(real, one.mine(), biomes, blocks));
 				}
 				return done;
 			}));

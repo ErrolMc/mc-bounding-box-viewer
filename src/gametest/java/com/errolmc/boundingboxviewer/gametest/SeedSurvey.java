@@ -1,5 +1,6 @@
 package com.errolmc.boundingboxviewer.gametest;
 
+import com.errolmc.boundingboxviewer.client.seed.SeedSnapping;
 import com.errolmc.boundingboxviewer.client.world.StructureInfo;
 import com.errolmc.boundingboxviewer.structure.Box;
 import com.errolmc.boundingboxviewer.structure.WorldType;
@@ -34,7 +35,7 @@ final class SeedSurvey implements AutoCloseable {
 	static final boolean ACTIVE = Boolean.getBoolean("bbv.survey");
 
 	static final String PIECES_HEADER = "seed,type,dimension,structure,start_x,start_z,piece,min_x,min_z,max_x,max_z,height,planned_y,seed_y,server_y,dy,"
-		+ "settled,biome";
+		+ "settled,biome,snap_y";
 	static final String WORLDS_HEADER = "seed,type,seconds,settled_pieces,result";
 
 	private final int instance;
@@ -128,7 +129,7 @@ final class SeedSurvey implements AutoCloseable {
 	 * problem of its own).
 	 */
 	void structure(SeedPlanningClientGameTest.World world, ResourceKey<Level> dimension, SeedCompare.ServerStart real, SeedCompare.SeedStart mine,
-			List<String> biomes) {
+			SeedSnapping.Snapped snapped, List<String> biomes) {
 		StructureInfo truth = real.info();
 		List<Box> server = truth.pieces();
 		List<Box> shown = mine.settled().pieces();
@@ -147,7 +148,8 @@ final class SeedSurvey implements AutoCloseable {
 			boolean settled = real.decorated().get(i) || !piece.equals(plan);
 			line(pieces, world.seed() + "," + world.type().key() + "," + dimension.identifier() + "," + truth.id() + "," + start.x() + "," + start.z() + ","
 				+ i + "," + piece.minX() + "," + piece.minZ() + "," + piece.maxX() + "," + piece.maxZ() + "," + piece.ySpan() + "," + plan.minY() + ","
-				+ seen.minY() + "," + piece.minY() + "," + (seen.minY() - piece.minY()) + "," + (settled ? 1 : 0) + "," + biomes.get(i));
+				+ seen.minY() + "," + piece.minY() + "," + (seen.minY() - piece.minY()) + "," + (settled ? 1 : 0) + "," + biomes.get(i) + ","
+				+ (snapped != null && snapped.found().get(i) ? Integer.toString(snapped.info().pieces().get(i).minY()) : ""));
 		}
 	}
 

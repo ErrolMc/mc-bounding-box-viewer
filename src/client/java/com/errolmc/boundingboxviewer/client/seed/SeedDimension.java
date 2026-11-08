@@ -19,6 +19,7 @@ import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.chunk.ChunkGenerator;
 import net.minecraft.world.level.chunk.ChunkGeneratorStructureState;
+import net.minecraft.world.level.chunk.PalettedContainerFactory;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.dimension.LevelStem;
 import net.minecraft.world.level.levelgen.Heightmap;
@@ -57,6 +58,7 @@ public final class SeedDimension {
 	private final RandomState randomState;
 	private final ChunkGeneratorStructureState structureState;
 	private final LevelHeightAccessor heightAccessor;
+	private final PalettedContainerFactory containers;
 	/** Each structure's place among those placed in the same decoration step, which seeds its pieces' random. */
 	private final Map<Structure, Integer> decorationIndex = new HashMap<>();
 
@@ -74,6 +76,7 @@ public final class SeedDimension {
 		this.structureState = generator.createState(registries.lookupOrThrow(Registries.STRUCTURE_SET), randomState, seed);
 		DimensionType type = stem.type().value();
 		this.heightAccessor = LevelHeightAccessor.create(type.minY(), type.height());
+		this.containers = PalettedContainerFactory.create(registries);
 		// As ChunkGenerator.applyBiomeDecoration numbers them: in registry order within each step.
 		Map<Integer, Integer> nextIndex = new HashMap<>();
 		structures.stream().forEach(structure -> decorationIndex.put(structure, nextIndex.merge(structure.step().ordinal(), 1, Integer::sum) - 1));
@@ -109,6 +112,11 @@ public final class SeedDimension {
 
 	StructureTemplateManager templates() {
 		return templates;
+	}
+
+	/** For chunks of this dimension's blocks. */
+	PalettedContainerFactory containers() {
+		return containers;
 	}
 
 	/** The structure's id, for example {@code minecraft:village_plains}. */

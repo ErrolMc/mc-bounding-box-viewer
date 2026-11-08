@@ -24,14 +24,15 @@ import java.util.stream.Stream;
  * (the later survey's). Plain Java, no game: it only reads and writes text.
  *
  * <p>Per settling structure: how often seed mode's height is the server's exactly, within 1, 2 and 4, the mean and
- * worst, the spread, the worst cases (with where to look), and the biomes it does worst in.
+ * worst, the spread, the worst cases (with where to look), and the biomes it does worst in. Then, for surveys with
+ * {@code snap_y}, how often a piece was found on its blocks, and how often those were where the server has them.
  */
 public final class SeedSurveySummary {
 	private static final int WORST_SHOWN = 6;
 	private static final int BIOME_MIN = 10;
 
 	private record Piece(String seed, String type, String dimension, String structure, int startX, int startZ, int piece, int minX, int minZ, int maxX,
-			int maxZ, int serverY, int dy, boolean settled, String biome) {
+			int maxZ, int serverY, int dy, boolean settled, String biome, boolean snapTried, Integer snapDy) {
 		String key() {
 			return seed + "|" + type + "|" + dimension + "|" + structure + "|" + startX + "|" + startZ + "|" + piece;
 		}
@@ -88,12 +89,17 @@ public final class SeedSurveySummary {
 	static String summary(List<Path> surveys, Path merged) throws IOException {
 		Map<String, Piece> pieces = new LinkedHashMap<>();
 		Map<String, World> worlds = new LinkedHashMap<>();
+		boolean snapped = false;
 		Set<String> problems = new LinkedHashSet<>();
 		for (Path survey : surveys) {
 			for (Path file : files(survey, "-pieces.csv")) {
 				for (String[] row : rows(file)) {
+					// snap_y: only in later surveys, and empty for a piece not found on its blocks.
+					boolean snapTried = row.length > 18;
+					Integer snapDy = snapTried && !row[18].isBlank() ? parse(row[18]) - parse(row[14]) : null;
 					Piece piece = new Piece(row[0], row[1], row[2], row[3], parse(row[4]), parse(row[5]), parse(row[6]), parse(row[7]), parse(row[8]),
-						parse(row[9]), parse(row[10]), parse(row[14]), parse(row[15]), row[16].equals("1"), row[17]);
+						parse(row[9]), parse(row[10]), parse(row[14]), parse(row[15]), row[16].equals("1"), row[17], snapTried, snapDy);
+					snapped |= snapTried;
 					pieces.put(piece.key(), piece);
 				}
 			}
@@ -133,6 +139,13 @@ public final class SeedSurveySummary {
 			.append("layers) count once.\n");
 		for (Map.Entry<String, List<Piece>> entry : byStructure.entrySet()) {
 			out.append('\n').append(structure(entry.getKey(), entry.getValue()));
+		}
+		if (snapped) {
+			out.append("\nPut on their blocks (as seed mode does once the client has the chunks): found = share of pieces found on their\n")
+				.append("blocks; exact = share of those found where the server has them.\n");
+			for (Map.Entry<String, List<Piece>> entry : byStructure.entrySet()) {
+				out.append(snaps(entry.getKey(), entry.getValue()));
+			}
 		}
 		out.append('\n').append(problems.size()).append(problems.size() == 1 ? " problem" : " problems").append(problems.isEmpty() ? "\n" : ":\n");
 		problems.forEach(problem -> out.append("  ").append(problem).append('\n'));
@@ -183,12 +196,38 @@ public final class SeedSurveySummary {
 		return out.toString();
 	}
 
+	private static String snaps(String id, List<Piece> all) {
+		// Only pieces from surveys that tried (older ones have no snap_y).
+		List<Piece> pieces = all.stream().filter(Piece::snapTried).toList();
+		if (id.equals("minecraft:buried_treasure") || pieces.isEmpty()) {
+			return "";
+		}
+		int n = pieces.size();
+		List<Piece> found = pieces.stream().filter(piece -> piece.snapDy() != null).toList();
+		long exact = found.stream().filter(piece -> piece.snapDy() == 0).count();
+		StringBuilder out = new StringBuilder();
+		out.append("  ").append(id).append(": ").append(n).append(" pieces, found ").append(percent(found.size(), n)).append(", exact ")
+			.append(percent(exact, found.size())).append(" of those found");
+		List<Piece> off = found.stream().filter(piece -> piece.snapDy() != 0).sorted(Comparator.comparingInt((Piece piece) -> -Math.abs(piece.snapDy())))
+			.limit(WORST_SHOWN).toList();
+		if (!off.isEmpty()) {
+			out.append("; off:");
+			off.forEach(piece -> out.append(String.format(Locale.ROOT, " %+d at ", piece.snapDy())).append(piece.where()).append(';'));
+		}
+		List<Piece> missed = pieces.stream().filter(piece -> piece.snapDy() == null).limit(3).toList();
+		if (!missed.isEmpty()) {
+			out.append(" not found, for example:");
+			missed.forEach(piece -> out.append(' ').append(piece.where()).append(';'));
+		}
+		return out.append('\n').toString();
+	}
+
 	private static long within(List<Piece> pieces, int blocks) {
 		return pieces.stream().filter(piece -> Math.abs(piece.dy()) <= blocks).count();
 	}
 
 	private static String percent(long count, int of) {
-		return String.format(Locale.ROOT, "%.1f%%", 100.0 * count / of);
+		return of == 0 ? "-" : String.format(Locale.ROOT, "%.1f%%", 100.0 * count / of);
 	}
 
 	private static List<Path> files(Path survey, String suffix) throws IOException {

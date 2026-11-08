@@ -1,15 +1,26 @@
 package com.errolmc.boundingboxviewer.gametest;
 
 import com.errolmc.boundingboxviewer.client.seed.SeedDimension;
+import com.errolmc.boundingboxviewer.client.seed.SeedMode;
+import com.errolmc.boundingboxviewer.client.seed.SeedSnapping;
 import com.errolmc.boundingboxviewer.client.world.StructureInfo;
 import com.errolmc.boundingboxviewer.structure.Box;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
@@ -165,6 +176,189 @@ final class SeedCompare {
 			return at + " is " + worst + " blocks off in height: " + shown.pieces() + " in seed mode, " + truth.pieces() + " on the server";
 		}
 		return null;
+	}
+
+	/** The settling structures {@link SeedSnapping} puts on their blocks: all but buried treasure (on its chest instead). */
+	static boolean snaps(String id) {
+		return SETTLING.contains(id) && !id.equals("minecraft:buried_treasure");
+	}
+
+	/** The blocks under the structure's pieces as the client has them, or null when it lacks a chunk of them. Client thread. */
+	static SeedSnapping.Columns clientBlocks(ClientLevel level, StructureInfo info) {
+		for (ChunkPos chunk : SeedSnapping.chunks(info)) {
+			if (SeedMode.clientChunk(level, chunk.x(), chunk.z()) == null) {
+				return null;
+			}
+		}
+		return SeedSnapping.read(info, level, (x, z) -> SeedMode.clientChunk(level, x, z));
+	}
+
+	/** The commonest blocks in the box, with how many, to say what's there when something isn't found. */
+	static String blocksIn(BlockGetter level, Box box) {
+		Map<Block, Integer> counts = new HashMap<>();
+		for (BlockPos pos : BlockPos.betweenClosed(box.minX(), box.minY(), box.minZ(), box.maxX(), box.maxY(), box.maxZ())) {
+			counts.merge(level.getBlockState(pos).getBlock(), 1, Integer::sum);
+		}
+		return counts.entrySet().stream().sorted(Map.Entry.<Block, Integer>comparingByValue().reversed()).limit(8)
+			.map(entry -> BuiltInRegistries.BLOCK.getKey(entry.getKey()).getPath() + " " + entry.getValue()).collect(Collectors.joining(", "));
+	}
+
+	/** The blocks under the structure's pieces on the server, or null when a chunk of them isn't decorated. Server thread. */
+	static SeedSnapping.Columns serverBlocks(ServerLevel level, StructureInfo info) {
+		for (ChunkPos chunk : SeedSnapping.chunks(info)) {
+			ChunkAccess access = level.getChunk(chunk.x(), chunk.z(), ChunkStatus.EMPTY, false);
+			if (access == null || !access.getPersistedStatus().isOrAfter(ChunkStatus.FEATURES)) {
+				return null;
+			}
+		}
+		return SeedSnapping.read(info, level, (x, z) -> level.getChunk(x, z, ChunkStatus.EMPTY, false));
+	}
+
+	/**
+	 * What's wrong with seed mode's structure put on its blocks (all of its chunks decorated), or null when nothing is:
+	 * each piece found must be where the server has it or where its blocks are in one of its chunks (see
+	 * {@link #onBlocks}). How many were found, and exact, go into the stats.
+	 *
+	 * @param shown what was put on the blocks
+	 * @param blocks the blocks it was put on
+	 */
+	static String snapDifference(SeedDimension dimension, ServerStart server, StructureInfo shown, SeedSnapping.Snapped snapped,
+			SeedSnapping.Columns blocks, Snaps snaps) {
+		StructureInfo truth = server.info();
+		if (!snaps(truth.id())) {
+			return null;
+		}
+		List<Box> real = truth.pieces();
+		List<Box> mine = snapped.info().pieces();
+		if (mine.size() != real.size()) {
+			return server.at() + " has " + mine.size() + " pieces put on its blocks, " + real.size() + " on the server";
+		}
+		OnBlocks on = onBlocks(dimension, shown, mine, snapped.found(), real, blocks);
+		snaps.add(server, real.size(), on.found(), on.exact(), on.elsewhere());
+		return on.wrong().isEmpty() ? null : server.at() + " put on its blocks: " + String.join(", ", on.wrong());
+	}
+
+	/**
+	 * Pieces put on their blocks against the server's: of those found, how many are where the server has them, how many
+	 * where their blocks are in one of their chunks but not the server's box, and what's wrong with the rest.
+	 */
+	record OnBlocks(int found, int exact, int elsewhere, List<String> wrong) {
+	}
+
+	/**
+	 * Each piece found ({@code found} null: every one) must be where the server has it, or where its blocks are in one
+	 * of its chunks ({@link #chunkHeights}): the game places a piece a chunk at a time, and can work its height out
+	 * again for a later chunk (an ocean ruin always does; a shipwreck or a temple when its start chunk was read back
+	 * from disk in between, which a dedicated server does with chunks it lets go of), so its blocks aren't always all
+	 * at one height. The server's box is from the last time; seed mode's is where most of the blocks are.
+	 *
+	 * @param shown what was put on the blocks, to put each chunk's on them alone
+	 */
+	static OnBlocks onBlocks(SeedDimension dimension, StructureInfo shown, List<Box> mine, List<Boolean> found, List<Box> real,
+			SeedSnapping.Columns blocks) {
+		int count = 0;
+		int exact = 0;
+		int elsewhere = 0;
+		List<String> wrong = new ArrayList<>();
+		List<Set<Integer>> heights = null;
+		for (int i = 0; i < real.size(); i++) {
+			if (found != null && !found.get(i)) {
+				continue;
+			}
+			count++;
+			Box at = mine.get(i);
+			Box truth = real.get(i);
+			if (at.equals(truth)) {
+				exact++;
+				continue;
+			}
+			if (heights == null) {
+				heights = chunkHeights(dimension, shown, blocks);
+			}
+			if (sameFootprint(at, truth) && heights.get(i).contains(at.minY())) {
+				elsewhere++;
+			} else {
+				wrong.add("piece " + i + " at " + at + ", not the server's " + truth + " (its blocks chunk by chunk at y " + heights.get(i) + ")");
+			}
+		}
+		return new OnBlocks(count, exact, elsewhere, wrong);
+	}
+
+	/**
+	 * For each piece, the heights it's found at on each of its chunks' blocks alone. A chunk can have only a row of a
+	 * piece, so any number of its blocks will do, as long as half of those there match.
+	 */
+	static List<Set<Integer>> chunkHeights(SeedDimension dimension, StructureInfo shown, SeedSnapping.Columns blocks) {
+		List<Set<Integer>> heights = new ArrayList<>();
+		shown.pieces().forEach(piece -> heights.add(new TreeSet<>()));
+		for (ChunkPos chunk : SeedSnapping.chunks(shown)) {
+			SeedSnapping.Snapped one = SeedSnapping.snap(dimension, shown, blocks.only(chunk.x(), chunk.z()), 1);
+			for (int i = 0; i < heights.size(); i++) {
+				if (one.found().get(i)) {
+					heights.get(i).add(one.info().pieces().get(i).minY());
+				}
+			}
+		}
+		return heights;
+	}
+
+	/**
+	 * Snapping per structure: pieces tried on their blocks, found, found where the server has them, and found where their
+	 * blocks are in another of their chunks.
+	 */
+	static final class Snaps {
+		private record Result(int pieces, int found, int exact, int elsewhere) {
+		}
+
+		private final String name;
+		/** The latest for each structure (id and start chunk), as one is often tried at several places. */
+		private final Map<String, Map<Long, Result>> results = new TreeMap<>();
+		private final Map<String, List<String>> notFound = new TreeMap<>();
+
+		Snaps(String name) {
+			this.name = name;
+		}
+
+		synchronized void add(ServerStart server, int pieces, int found, int exact, int elsewhere) {
+			String id = server.info().id();
+			results.computeIfAbsent(id, key -> new LinkedHashMap<>()).put(server.info().startChunk(), new Result(pieces, found, exact, elsewhere));
+			if (found < pieces) {
+				List<String> list = notFound.computeIfAbsent(id, key -> new ArrayList<>());
+				String at = ChunkPos.unpack(server.info().startChunk()) + " (" + (pieces - found) + " of " + pieces + " at " + server.info().bounds() + ")";
+				if (list.size() < 8 && !list.contains(at)) {
+					list.add(at);
+				}
+			}
+		}
+
+		synchronized void addAll(Snaps other) {
+			other.results.forEach((id, byChunk) -> results.computeIfAbsent(id, key -> new LinkedHashMap<>()).putAll(byChunk));
+			other.notFound.forEach((id, list) -> notFound.computeIfAbsent(id, key -> new ArrayList<>()).addAll(list));
+		}
+
+		synchronized int structures() {
+			return results.values().stream().mapToInt(Map::size).sum();
+		}
+
+
+		synchronized void log(Logger logger) {
+			logger.info("Put on their blocks ({}): {} structures", name, structures());
+			results.forEach((id, byChunk) -> {
+				int pieces = 0;
+				int found = 0;
+				int exact = 0;
+				int elsewhere = 0;
+				for (Result result : byChunk.values()) {
+					pieces += result.pieces();
+					found += result.found();
+					exact += result.exact();
+					elsewhere += result.elsewhere();
+				}
+				logger.info("  {}: {} structures, {} pieces, found {}%, exact {}% of those found (the rest where their blocks are in another chunk: {}); "
+					+ "not found at {}", id, byChunk.size(), pieces, pieces == 0 ? 0 : 100 * found / pieces, found == 0 ? 0 : 100 * exact / found,
+					elsewhere, notFound.getOrDefault(id, List.of()));
+			});
+		}
 	}
 
 	/** The same box but for where it is up or down. */

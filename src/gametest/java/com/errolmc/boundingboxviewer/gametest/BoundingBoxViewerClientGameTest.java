@@ -5,7 +5,9 @@ import static com.errolmc.boundingboxviewer.gametest.TestWorlds.check;
 import com.errolmc.boundingboxviewer.client.config.BoxConfig;
 import com.errolmc.boundingboxviewer.client.overlay.BoxOverlay;
 import com.errolmc.boundingboxviewer.client.overlay.Labels;
+import com.errolmc.boundingboxviewer.client.seed.SeedDimension;
 import com.errolmc.boundingboxviewer.client.seed.SeedMode;
+import com.errolmc.boundingboxviewer.client.seed.SeedSnapping;
 import com.errolmc.boundingboxviewer.client.seed.SeedWorld;
 import com.errolmc.boundingboxviewer.client.world.StructureCollector;
 import com.errolmc.boundingboxviewer.client.world.StructureInfo;
@@ -32,6 +34,7 @@ import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContex
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundSource;
@@ -85,6 +88,8 @@ public class BoundingBoxViewerClientGameTest implements FabricClientGameTest {
 	private SeedWorld seedWorld;
 	private final SeedCompare.Stats seedStats = new SeedCompare.Stats("singleplayer, decorated as the player arrives");
 	private int seedCompared;
+	private final SeedCompare.Snaps snaps = new SeedCompare.Snaps("singleplayer, chunks on the client");
+	private final List<String> snapProblems = new ArrayList<>();
 
 	@Override
 	public void runTest(ClientGameTestContext context) {
@@ -141,6 +146,8 @@ public class BoundingBoxViewerClientGameTest implements FabricClientGameTest {
 			"test client is not muted");
 		LOGGER.info("Seed mode compared with the server for {} structures", seedCompared);
 		seedStats.log(LOGGER);
+		snaps.log(LOGGER);
+		check(snapProblems.isEmpty(), "seed mode put on the blocks: " + String.join("; ", snapProblems));
 	}
 
 	/** {@code /boxes seed} does nothing in singleplayer: the boxes come from this game's own server. */
@@ -342,6 +349,24 @@ public class BoundingBoxViewerClientGameTest implements FabricClientGameTest {
 			seedCompared++;
 		}
 		check(seedProblems.isEmpty(), "seed mode: " + String.join("; ", seedProblems));
+		// Settling structures the client has all the chunks of, put on its blocks as seed mode would: where the server has them.
+		SeedDimension seed = seedWorld.dimension(dimension);
+		for (SeedCompare.ServerStart start : expected.values()) {
+			String id = start.info().id();
+			SeedCompare.SeedStart mine = SeedCompare.snaps(id) ? SeedCompare.seedStart(seed, id, start.info().startChunk()) : null;
+			SeedSnapping.Columns blocks = mine == null ? null : context.computeOnClient(minecraft -> SeedCompare.clientBlocks(minecraft.level, mine.settled()));
+			if (blocks == null) {
+				continue;
+			}
+			SeedSnapping.Snapped snapped = SeedSnapping.snap(seed, mine.settled(), blocks);
+			ResourceKey<Structure> key = ResourceKey.create(Registries.STRUCTURE, Identifier.parse(id));
+			String problem = SeedCompare.snapDifference(seed, current(world, dimension, key, start.info().startChunk()), mine.settled(), snapped, blocks,
+				snaps);
+			if (problem != null && !snapProblems.contains(problem)) {
+				LOGGER.warn("Seed mode put on the blocks: {}", problem);
+				snapProblems.add(problem);
+			}
+		}
 		LOGGER.info("{}: {} structures in the {} x {} chunks around the player, the same in seed mode; {} known in the dimension",
 			dimension.identifier(), expected.size(), 2 * CHECK_RADIUS + 1, 2 * CHECK_RADIUS + 1, StructureStore.in(dimension).size());
 	}
